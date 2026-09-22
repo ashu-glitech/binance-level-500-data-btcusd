@@ -112,6 +112,11 @@ if HF_TOKEN and HF_DATASET_REPO:
         print(f"⚠️ Could not verify HF Repo: {e}")
 
 def get_working_proxy():
+    user_proxy = os.environ.get("BINANCE_PROXY")
+    if user_proxy:
+        print(f"🔗 Using User-Provided Proxy: {user_proxy}", flush=True)
+        return {"http": user_proxy, "https": user_proxy}
+
     print("🔍 Hunting for a free working proxy (Auto-Bypass Geo-Block)...", flush=True)
     try:
         res = requests.get("https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt", timeout=10)
