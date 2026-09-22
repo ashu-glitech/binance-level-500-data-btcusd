@@ -16,6 +16,16 @@ hf_api = HfApi()
 HF_TOKEN = os.environ.get("HF_TOKEN")
 HF_DATASET_REPO = os.environ.get("HF_DATASET_REPO") # e.g., "username/dataset-name"
 
+if HF_TOKEN and HF_DATASET_REPO:
+    try:
+        hf_api.create_repo(repo_id=HF_DATASET_REPO, repo_type="dataset", token=HF_TOKEN, exist_ok=True)
+        print(f"✅ Hugging Face Dataset {HF_DATASET_REPO} is ready for sync!")
+    except Exception as e:
+        print(f"⚠️ Could not verify HF Repo: {e}")
+
+BINANCE_PROXY = os.environ.get("BINANCE_PROXY")
+PROXIES = {"http": BINANCE_PROXY, "https": BINANCE_PROXY} if BINANCE_PROXY else None
+
 SYMBOL_FUTURES = "btcusdt"
 SYMBOL_SPOT = "BTCUSDT"
 TARGET_DELAY = 300 # 5 minutes
@@ -120,8 +130,15 @@ async def lob_stream():
 def fetch_snapshot():
     global last_update_id, is_synced
     print("📸 Fetching Base Snapshot from REST (ONCE)...")
-    res = requests.get(f"https://fapi.binance.com/fapi/v1/depth?symbol={SYMBOL_SPOT}&limit=1000")
-    data = res.json()
+    try:
+        res = requests.get(f"https://fapi.binance.com/fapi/v1/depth?symbol={SYMBOL_FUTURES.upper()}&limit=1000", proxies=PROXIES, timeout=10)
+        data = res.json()
+        if 'lastUpdateId' not in data:
+            print(f"❌ REST API Error: {data}")
+            return
+    except Exception as e:
+        print(f"❌ Proxy/Connection Error: {e}")
+        return
     last_update_id = data['lastUpdateId']
     
     for p, v in data['bids']: LOB["bids"][float(p)] = float(v)
@@ -161,11 +178,12 @@ async def trades_liqs_stream():
 async def fetch_oi_funding_loop():
     while True:
         try:
-            oi = requests.get(f"https://fapi.binance.com/fapi/v1/openInterest?symbol={SYMBOL_SPOT}", timeout=3).json()
-            fr = requests.get(f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={SYMBOL_SPOT}", timeout=3).json()
+            oi = requests.get(f"https://fapi.binance.com/fapi/v1/openInterest?symbol={SYMBOL_SPOT}", proxies=PROXIES, timeout=10).json()
+            fr = requests.get(f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={SYMBOL_SPOT}", proxies=PROXIES, timeout=10).json()
             live_state["open_interest"] = float(oi.get('openInterest', 0))
             live_state["funding_rate"] = float(fr.get('lastFundingRate', 0))
-        except: pass
+        except Exception as e:
+            print(f"⚠️ Error fetching OI/Funding (Proxy issue?): {e}")
         await asyncio.sleep(10)
 
 def clean_queues():
