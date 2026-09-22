@@ -116,29 +116,11 @@ if HF_TOKEN and HF_DATASET_REPO:
 
 def get_working_proxy():
     user_proxy = os.environ.get("BINANCE_PROXY")
-    if user_proxy == "DIRECT":
-        print("🔗 DIRECT MODE: Skipping proxy...", flush=True)
-        return None
-    elif user_proxy:
+    if user_proxy and user_proxy != "DIRECT":
         print(f"🔗 Using User-Provided Proxy: {user_proxy}", flush=True)
         return {"http": user_proxy, "https": user_proxy}
 
-    print("🔍 Hunting for a free working proxy (Auto-Bypass Geo-Block)...", flush=True)
-    try:
-        res = requests.get("https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt", timeout=10)
-        proxy_list = res.text.strip().splitlines()
-        for p in proxy_list[:100]:
-            proxy_dict = {"http": f"http://{p}", "https": f"http://{p}"}
-            try:
-                test = requests.get("https://fapi.binance.com/fapi/v1/time", proxies=proxy_dict, timeout=3)
-                if test.status_code == 200:
-                    print(f"✅ Found working proxy: {p}", flush=True)
-                    return proxy_dict
-            except:
-                continue
-    except:
-        pass
-    print("❌ Auto-Proxy Hunter failed to find a working proxy.", flush=True)
+    print("🔗 DIRECT MODE (Default): No proxy used.", flush=True)
     return None
 
 PROXIES = None
