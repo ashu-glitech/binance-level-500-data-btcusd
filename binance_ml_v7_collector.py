@@ -9,6 +9,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from datetime import datetime
 from collections import deque
+from huggingface_hub import HfApi
+
+# HF API Setup
+hf_api = HfApi()
+HF_TOKEN = os.environ.get("HF_TOKEN")
+HF_DATASET_REPO = os.environ.get("HF_DATASET_REPO") # e.g., "username/dataset-name"
 
 SYMBOL_FUTURES = "btcusdt"
 SYMBOL_SPOT = "BTCUSDT"
@@ -49,6 +55,20 @@ def flush_parquet_buffer():
     if not os.path.exists(filename): pq.write_table(table, filename)
     else: pq.write_table(pa.concat_tables([pq.read_table(filename), table]), filename)
     parquet_buffer = []
+    
+    # Upload to Hugging Face after saving
+    if HF_TOKEN and HF_DATASET_REPO:
+        try:
+            hf_api.upload_file(
+                path_or_fileobj=filename,
+                path_in_repo=filename,
+                repo_id=HF_DATASET_REPO,
+                repo_type="dataset",
+                token=HF_TOKEN
+            )
+            print(f"🚀 Successfully Synced {filename} to Hugging Face Dataset: {HF_DATASET_REPO}")
+        except Exception as e:
+            print(f"⚠️ HF Upload Failed: {e}")
 
 # --- LOB SYNC & AGGREGATION ---
 def apply_lob_event(event):
