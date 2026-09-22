@@ -16,12 +16,77 @@ from datetime import datetime
 from collections import deque
 from huggingface_hub import HfApi
 
+total_rows_collected = 0
+last_upload_time = "Not uploaded yet"
+
 class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.send_header("Content-type", "text/plain")
+        self.send_header("Content-type", "text/html")
         self.end_headers()
-        self.wfile.write(b"Bot is alive!")
+        
+        html = f"""
+        <html>
+        <head>
+            <title>Binance LOB Collector Dashboard</title>
+            <meta http-equiv="refresh" content="5">
+            <style>
+                body {{ background-color: #0f172a; color: #e2e8f0; font-family: 'Inter', sans-serif; margin: 0; padding: 40px; }}
+                .container {{ max-width: 800px; margin: 0 auto; background: #1e293b; padding: 30px; border-radius: 15px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }}
+                h1 {{ color: #38bdf8; text-align: center; font-size: 32px; margin-bottom: 5px; }}
+                h3 {{ color: #94a3b8; text-align: center; margin-top: 0; margin-bottom: 30px; font-weight: normal; }}
+                .grid {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }}
+                .card {{ background: #0f172a; padding: 20px; border-radius: 10px; border-left: 5px solid #38bdf8; }}
+                .card h2 {{ font-size: 14px; color: #94a3b8; margin: 0 0 10px 0; text-transform: uppercase; letter-spacing: 1px; }}
+                .card p {{ font-size: 28px; font-weight: bold; margin: 0; color: #f8fafc; }}
+                .status-badge {{ background: #22c55e; color: white; padding: 5px 15px; border-radius: 20px; font-size: 14px; font-weight: bold; }}
+                .footer {{ text-align: center; margin-top: 30px; color: #64748b; font-size: 14px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Binance AI Collector</h1>
+                <h3>HuggingFace Auto-Sync 🚀</h3>
+                
+                <div style="text-align: center; margin-bottom: 30px;">
+                    <span class="status-badge">{"🟢 LOB SYNCED" if is_synced else "⏳ WAITING FOR SNAPSHOT"}</span>
+                </div>
+                
+                <div class="grid">
+                    <div class="card" style="border-color: #f59e0b;">
+                        <h2>Current BTC Price</h2>
+                        <p>${live_state.get('current_price', 0):,.2f}</p>
+                    </div>
+                    <div class="card" style="border-color: #3b82f6;">
+                        <h2>Rows in Buffer</h2>
+                        <p>{len(parquet_buffer)} / 60</p>
+                    </div>
+                    <div class="card" style="border-color: #10b981;">
+                        <h2>Total Rows Collected</h2>
+                        <p>{total_rows_collected}</p>
+                    </div>
+                    <div class="card" style="border-color: #8b5cf6;">
+                        <h2>Last HF Upload</h2>
+                        <p style="font-size: 18px; margin-top: 10px;">{last_upload_time}</p>
+                    </div>
+                    <div class="card" style="border-color: #ec4899;">
+                        <h2>Open Interest</h2>
+                        <p>{live_state.get('open_interest', 0):,.2f}</p>
+                    </div>
+                    <div class="card" style="border-color: #14b8a6;">
+                        <h2>Funding Rate</h2>
+                        <p>{live_state.get('funding_rate', 0):.6f}</p>
+                    </div>
+                </div>
+                
+                <div class="footer">
+                    Auto-refreshing every 5 seconds. Data streaming directly to {HF_DATASET_REPO}
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        self.wfile.write(html.encode("utf-8"))
 
 def start_health_server():
     PORT = int(os.environ.get("PORT", 10000))
@@ -93,9 +158,10 @@ def get_daily_parquet_filename():
 # Save in batches for HFT performance
 parquet_buffer = []
 def flush_parquet_buffer():
-    global parquet_buffer
+    global parquet_buffer, total_rows_collected, last_upload_time
     if not parquet_buffer: return
     df = pd.DataFrame(parquet_buffer)
+    total_rows_collected += len(df)
     table = pa.Table.from_pandas(df)
     filename = get_daily_parquet_filename()
     if not os.path.exists(filename): pq.write_table(table, filename)
@@ -112,6 +178,7 @@ def flush_parquet_buffer():
                 repo_type="dataset",
                 token=HF_TOKEN
             )
+            last_upload_time = datetime.now().strftime('%H:%M:%S')
             print(f"🚀 Successfully Synced {filename} to Hugging Face Dataset: {HF_DATASET_REPO}")
         except Exception as e:
             print(f"⚠️ HF Upload Failed: {e}")
