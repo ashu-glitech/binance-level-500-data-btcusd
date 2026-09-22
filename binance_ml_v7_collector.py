@@ -244,9 +244,12 @@ async def lob_stream():
         async with session.ws_connect(url, proxy=proxy_str) as ws:
             print("🌊 LOB True Millisecond Stream Connected!", flush=True)
             async for msg in ws:
-                event = msg.json()
-                if not is_synced: buffered_events.append(event)
-                else: apply_lob_event(event)
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    event = json.loads(msg.data)
+                    if not is_synced: buffered_events.append(event)
+                    else: apply_lob_event(event)
+                elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                    break
 
 def fetch_snapshot():
     global last_update_id, is_synced
@@ -280,23 +283,26 @@ async def trades_liqs_stream():
         async with session.ws_connect(url, proxy=proxy_str) as ws:
             print("🟢 Trades, Liqs, Klines Connected!", flush=True)
             async for msg in ws:
-                data = msg.json()
-            stream, d = data.get("stream", ""), data.get("data", {})
-            now_ms = time.time() * 1000
-            
-            if "@aggTrade" in stream:
-                is_buy = not d.get("m", True)
-                trades_q.append((now_ms, float(d.get("q", 0)), is_buy))
-                live_state["current_price"] = float(d.get("p", 0))
-            elif "@forceOrder" in stream:
-                o = d.get("o", {})
-                liqs_q.append((now_ms, float(o.get("q", 0)), o.get("S") == "SELL"))
-            elif "@kline" in stream:
-                k = d.get("k", {})
-                body = float(k.get("c")) - float(k.get("o"))
-                if "1m" in stream: live_state["body_1m"] = body
-                elif "3m" in stream: live_state["body_3m"] = body
-                elif "5m" in stream: live_state["body_5m"] = body
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    data = json.loads(msg.data)
+                    stream, d = data.get("stream", ""), data.get("data", {})
+                    now_ms = time.time() * 1000
+                    
+                    if "@aggTrade" in stream:
+                        is_buy = not d.get("m", True)
+                        trades_q.append((now_ms, float(d.get("q", 0)), is_buy))
+                        live_state["current_price"] = float(d.get("p", 0))
+                    elif "@forceOrder" in stream:
+                        o = d.get("o", {})
+                        liqs_q.append((now_ms, float(o.get("q", 0)), o.get("S") == "SELL"))
+                    elif "@kline" in stream:
+                        k = d.get("k", {})
+                        body = float(k.get("c")) - float(k.get("o"))
+                        if "1m" in stream: live_state["body_1m"] = body
+                        elif "3m" in stream: live_state["body_3m"] = body
+                        elif "5m" in stream: live_state["body_5m"] = body
+                elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                    break
 
 async def fetch_oi_funding_loop():
     while True:
