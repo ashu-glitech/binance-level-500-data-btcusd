@@ -310,9 +310,14 @@ def clean_queues():
 snapshot_id = 0
 async def snapshot_recording_loop():
     global snapshot_id
-    print("⏳ Starting 1-Second Snapshot Loop (Optimal for 5M Prediction)...")
+    print("⏳ Starting 1-Second Snapshot Loop (Optimal for 5M Prediction)...", flush=True)
     while True:
         await asyncio.sleep(1) # 1-Second Snapshot!
+        
+        # Fallback if trades stream is silent: use best bid from LOB as current price
+        if live_state["current_price"] == 0 and len(LOB["bids"]) > 0:
+            live_state["current_price"] = max(p for p, v in LOB["bids"].items() if v > 0)
+            
         if not is_synced or live_state["current_price"] == 0: continue
         
         clean_queues()
