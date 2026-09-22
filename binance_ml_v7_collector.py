@@ -159,11 +159,16 @@ def flush_parquet_buffer():
     global parquet_buffer, total_rows_collected, last_upload_time
     if not parquet_buffer: return
     df = pd.DataFrame(parquet_buffer)
-    total_rows_collected += len(df)
     table = pa.Table.from_pandas(df)
     filename = get_daily_parquet_filename()
-    if not os.path.exists(filename): pq.write_table(table, filename)
-    else: pq.write_table(pa.concat_tables([pq.read_table(filename), table]), filename)
+    
+    if not os.path.exists(filename): 
+        combined_table = table
+    else: 
+        combined_table = pa.concat_tables([pq.read_table(filename), table])
+        
+    pq.write_table(combined_table, filename)
+    total_rows_collected = combined_table.num_rows
     parquet_buffer = []
     
     # Upload to Hugging Face after saving
