@@ -7,9 +7,27 @@ import requests
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+import http.server
+import socketserver
+import threading
+import pyarrow as pa
+import pyarrow.parquet as pq
 from datetime import datetime
 from collections import deque
 from huggingface_hub import HfApi
+
+class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def start_health_server():
+    PORT = int(os.environ.get("PORT", 10000))
+    with socketserver.TCPServer(("", PORT), HealthCheckHandler) as httpd:
+        print(f"🟢 [RENDER] Dummy Health Server listening on port {PORT}...", flush=True)
+        httpd.serve_forever()
 
 # HF API Setup
 hf_api = HfApi()
@@ -24,23 +42,22 @@ if HF_TOKEN and HF_DATASET_REPO:
         print(f"⚠️ Could not verify HF Repo: {e}")
 
 def get_working_proxy():
-    print("🔍 Hunting for a free working proxy (Auto-Bypass Geo-Block)...")
+    print("🔍 Hunting for a free working proxy (Auto-Bypass Geo-Block)...", flush=True)
     try:
         res = requests.get("https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt", timeout=10)
         proxy_list = res.text.strip().splitlines()
-        for p in proxy_list[:100]: # Try up to 100 free proxies
+        for p in proxy_list[:100]:
             proxy_dict = {"http": f"http://{p}", "https": f"http://{p}"}
             try:
-                # Test proxy against Binance Futures API
                 test = requests.get("https://fapi.binance.com/fapi/v1/time", proxies=proxy_dict, timeout=3)
                 if test.status_code == 200:
-                    print(f"✅ Found working proxy: {p}")
+                    print(f"✅ Found working proxy: {p}", flush=True)
                     return proxy_dict
             except:
                 continue
     except:
         pass
-    print("❌ Auto-Proxy Hunter failed to find a working proxy.")
+    print("❌ Auto-Proxy Hunter failed to find a working proxy.", flush=True)
     return None
 
 PROXIES = get_working_proxy()
@@ -250,11 +267,13 @@ async def snapshot_recording_loop():
         if len(parquet_buffer) >= 60: # Save to disk every 1 minute
             flush_parquet_buffer()
             print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Saved 60 Rows to Parquet! (Targets will be calculated in Pandas later)")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Saved 60 Rows to Parquet! (Targets will be calculated in Pandas later)", flush=True)
 
 
 
 async def main():
     asyncio.create_task(lob_stream())
+    threading.Thread(target=start_health_server, daemon=True).start()
     await asyncio.sleep(2)
     await asyncio.to_thread(fetch_snapshot)
     
