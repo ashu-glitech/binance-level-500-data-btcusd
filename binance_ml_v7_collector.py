@@ -23,8 +23,27 @@ if HF_TOKEN and HF_DATASET_REPO:
     except Exception as e:
         print(f"⚠️ Could not verify HF Repo: {e}")
 
-BINANCE_PROXY = os.environ.get("BINANCE_PROXY")
-PROXIES = {"http": BINANCE_PROXY, "https": BINANCE_PROXY} if BINANCE_PROXY else None
+def get_working_proxy():
+    print("🔍 Hunting for a free working proxy (Auto-Bypass Geo-Block)...")
+    try:
+        res = requests.get("https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt", timeout=10)
+        proxy_list = res.text.strip().splitlines()
+        for p in proxy_list[:100]: # Try up to 100 free proxies
+            proxy_dict = {"http": f"http://{p}", "https": f"http://{p}"}
+            try:
+                # Test proxy against Binance Futures API
+                test = requests.get("https://fapi.binance.com/fapi/v1/time", proxies=proxy_dict, timeout=3)
+                if test.status_code == 200:
+                    print(f"✅ Found working proxy: {p}")
+                    return proxy_dict
+            except:
+                continue
+    except:
+        pass
+    print("❌ Auto-Proxy Hunter failed to find a working proxy.")
+    return None
+
+PROXIES = get_working_proxy()
 
 SYMBOL_FUTURES = "btcusdt"
 SYMBOL_SPOT = "BTCUSDT"
