@@ -130,7 +130,7 @@ def get_working_proxy():
     print("❌ Auto-Proxy Hunter failed to find a working proxy.", flush=True)
     return None
 
-PROXIES = get_working_proxy()
+PROXIES = None
 
 SYMBOL_FUTURES = "btcusdt"
 SYMBOL_SPOT = "BTCUSDT"
@@ -344,8 +344,13 @@ async def snapshot_recording_loop():
 
 
 async def main():
-    asyncio.create_task(lob_stream())
+    global PROXIES
     threading.Thread(target=start_health_server, daemon=True).start()
+    
+    # Hunt for proxy AFTER health server is up so Render doesn't kill us for port timeout
+    PROXIES = get_working_proxy()
+    
+    asyncio.create_task(lob_stream())
     await asyncio.sleep(2)
     await asyncio.to_thread(fetch_snapshot)
     
