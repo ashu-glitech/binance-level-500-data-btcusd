@@ -2,7 +2,7 @@ import os
 import json
 import time
 import asyncio
-import websockets
+import aiohttp
 import requests
 import pandas as pd
 import pyarrow as pa
@@ -20,6 +20,9 @@ total_rows_collected = 0
 last_upload_time = "Not uploaded yet"
 
 class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
     def do_HEAD(self):
         self.send_response(200)
         self.send_header("Content-type", "text/html")
@@ -113,7 +116,10 @@ if HF_TOKEN and HF_DATASET_REPO:
 
 def get_working_proxy():
     user_proxy = os.environ.get("BINANCE_PROXY")
-    if user_proxy:
+    if user_proxy == "DIRECT":
+        print("🔗 DIRECT MODE: Skipping proxy...", flush=True)
+        return None
+    elif user_proxy:
         print(f"🔗 Using User-Provided Proxy: {user_proxy}", flush=True)
         return {"http": user_proxy, "https": user_proxy}
 
@@ -189,9 +195,9 @@ def flush_parquet_buffer():
                 token=HF_TOKEN
             )
             last_upload_time = datetime.now().strftime('%H:%M:%S')
-            print(f"🚀 Successfully Synced {filename} to Hugging Face Dataset: {HF_DATASET_REPO}")
+            print(f"🚀 Successfully Synced {filename} to Hugging Face Dataset: {HF_DATASET_REPO}", flush=True)
         except Exception as e:
-            print(f"⚠️ HF Upload Failed: {e}")
+            print(f"⚠️ HF Upload Failed: {e}", flush=True)
 
 # --- LOB SYNC & AGGREGATION ---
 def apply_lob_event(event):
@@ -231,26 +237,28 @@ def get_l1_spread():
 # --- WEBSOCKETS ---
 async def lob_stream():
     global is_synced, last_update_id
-    url = f"wss://stream.binance.com:9443/ws/{SYMBOL_FUTURES}@depth" # True MS level stream (not 100ms)
-    async with websockets.connect(url) as ws:
-        print("🌊 LOB True Millisecond Stream Connected!")
-        while True:
-            msg = await ws.recv()
-            event = json.loads(msg)
-            if not is_synced: buffered_events.append(event)
-            else: apply_lob_event(event)
+    url = f"wss://fstream.binance.com/ws/{SYMBOL_FUTURES}@depth" # True MS level stream (not 100ms)
+    proxy_str = PROXIES["http"] if PROXIES else None
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(url, proxy=proxy_str) as ws:
+            print("🌊 LOB True Millisecond Stream Connected!", flush=True)
+            async for msg in ws:
+                event = msg.json()
+                if not is_synced: buffered_events.append(event)
+                else: apply_lob_event(event)
 
 def fetch_snapshot():
     global last_update_id, is_synced
-    print("📸 Fetching Base Snapshot from REST (ONCE)...")
+    print("📸 Fetching Base Snapshot from REST (ONCE)...", flush=True)
     try:
         res = requests.get(f"https://fapi.binance.com/fapi/v1/depth?symbol={SYMBOL_FUTURES.upper()}&limit=1000", proxies=PROXIES, timeout=10)
         data = res.json()
         if 'lastUpdateId' not in data:
-            print(f"❌ REST API Error: {data}")
+            print(f"❌ REST API Error: {data}", flush=True)
             return
     except Exception as e:
-        print(f"❌ Proxy/Connection Error: {e}")
+        print(f"❌ Proxy/Connection Error: {e}", flush=True)
         return
     last_update_id = data['lastUpdateId']
     
@@ -261,16 +269,18 @@ def fetch_snapshot():
         if e['u'] <= last_update_id: continue
         apply_lob_event(e)
     is_synced = True
-    print("✅ Local Orderbook (LOB) Synced!")
+    print("✅ Local Orderbook (LOB) Synced!", flush=True)
 
 async def trades_liqs_stream():
     streams = f"{SYMBOL_FUTURES}@aggTrade/{SYMBOL_FUTURES}@forceOrder/{SYMBOL_FUTURES}@kline_1m/{SYMBOL_FUTURES}@kline_3m/{SYMBOL_FUTURES}@kline_5m"
     url = f"wss://fstream.binance.com/stream?streams={streams}"
-    async with websockets.connect(url) as ws:
-        print("🟢 Trades, Liqs, Klines Connected!")
-        while True:
-            msg = await ws.recv()
-            data = json.loads(msg)
+    proxy_str = PROXIES["http"] if PROXIES else None
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(url, proxy=proxy_str) as ws:
+            print("🟢 Trades, Liqs, Klines Connected!", flush=True)
+            async for msg in ws:
+                data = msg.json()
             stream, d = data.get("stream", ""), data.get("data", {})
             now_ms = time.time() * 1000
             
