@@ -220,7 +220,7 @@ def get_l1_spread():
 async def lob_stream():
     global is_synced, last_update_id
     url = f"wss://fstream.binance.com/ws/{SYMBOL_FUTURES}@depth" # True MS level stream (not 100ms)
-    proxy_str = PROXIES["http"] if PROXIES else None
+    proxy_str = None # DIRECT CONNECTION FOR WEBSOCKETS
     
     async with aiohttp.ClientSession() as session:
         async with session.ws_connect(url, proxy=proxy_str) as ws:
@@ -259,7 +259,7 @@ def fetch_snapshot():
 async def trades_liqs_stream():
     streams = f"{SYMBOL_FUTURES}@aggTrade/{SYMBOL_FUTURES}@forceOrder/{SYMBOL_FUTURES}@kline_1m/{SYMBOL_FUTURES}@kline_3m/{SYMBOL_FUTURES}@kline_5m"
     url = f"wss://fstream.binance.com/stream?streams={streams}"
-    proxy_str = PROXIES["http"] if PROXIES else None
+    proxy_str = None # DIRECT CONNECTION FOR WEBSOCKETS
     
     async with aiohttp.ClientSession() as session:
         async with session.ws_connect(url, proxy=proxy_str) as ws:
