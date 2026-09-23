@@ -14,7 +14,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from datetime import datetime
 from collections import deque
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, hf_hub_download
+import shutil
 
 total_rows_collected = 0
 last_upload_time = "Not uploaded yet"
@@ -384,7 +385,30 @@ async def snapshot_recording_loop():
 
 
 
+def resume_daily_file_from_hf():
+    filename = get_daily_parquet_filename()
+    if not os.path.exists(filename) and HF_TOKEN and HF_DATASET_REPO:
+        try:
+            print(f"🔄 Checking if {filename} exists on HF to resume...", flush=True)
+            file_path = hf_hub_download(
+                repo_id=HF_DATASET_REPO,
+                filename=filename,
+                repo_type="dataset",
+                token=HF_TOKEN
+            )
+            shutil.copy(file_path, filename)
+            
+            global total_rows_collected, current_active_filename
+            current_active_filename = filename
+            total_rows_collected = pq.read_table(filename).num_rows
+            
+            print(f"✅ Successfully resumed {filename} from HF! Starting with {total_rows_collected} rows.", flush=True)
+        except Exception as e:
+            print(f"ℹ️ No existing file on HF for today or error fetching: {e}. Starting fresh.", flush=True)
+
 async def main():
+    resume_daily_file_from_hf()
+    
     global PROXIES
     threading.Thread(target=start_health_server, daemon=True).start()
     
