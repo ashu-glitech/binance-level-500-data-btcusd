@@ -162,6 +162,28 @@ def flush_parquet_buffer():
     table = pa.Table.from_pandas(df)
     filename = get_daily_parquet_filename()
     
+    # --- DAY ROLLOVER PROTECTION (Prevents data leak at midnight) ---
+    global current_active_filename
+    if 'current_active_filename' not in globals():
+        current_active_filename = filename
+        
+    if current_active_filename != filename:
+        if HF_TOKEN and HF_DATASET_REPO:
+            try:
+                hf_api.upload_file(
+                    path_or_fileobj=current_active_filename,
+                    path_in_repo=current_active_filename,
+                    repo_id=HF_DATASET_REPO,
+                    repo_type="dataset",
+                    token=HF_TOKEN
+                )
+                print(f"🌅 [DAY ROLLOVER] Final sync for yesterday's file {current_active_filename} complete!", flush=True)
+            except Exception as e:
+                print(f"⚠️ Day Rollover Sync Failed: {e}")
+        current_active_filename = filename
+        total_rows_collected = 0 # Reset row counter for the new day
+    # -----------------------------------------------------------------
+    
     if not os.path.exists(filename): 
         combined_table = table
     else: 
