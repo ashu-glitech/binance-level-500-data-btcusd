@@ -171,20 +171,26 @@ def flush_parquet_buffer():
     total_rows_collected = combined_table.num_rows
     parquet_buffer = []
     
-    # Upload to Hugging Face after saving
+    # Upload to Hugging Face after saving (Rate limited to every 30 mins to save 5GB bandwidth)
+    global last_hf_upload_time_seconds
+    if 'last_hf_upload_time_seconds' not in globals():
+        last_hf_upload_time_seconds = 0
+        
     if HF_TOKEN and HF_DATASET_REPO:
-        try:
-            hf_api.upload_file(
-                path_or_fileobj=filename,
-                path_in_repo=filename,
-                repo_id=HF_DATASET_REPO,
-                repo_type="dataset",
-                token=HF_TOKEN
-            )
-            last_upload_time = datetime.now().strftime('%H:%M:%S')
-            print(f"🚀 Successfully Synced {filename} to Hugging Face Dataset: {HF_DATASET_REPO}", flush=True)
-        except Exception as e:
-            print(f"⚠️ HF Upload Failed: {e}", flush=True)
+        if time.time() - last_hf_upload_time_seconds > 1800:
+            try:
+                hf_api.upload_file(
+                    path_or_fileobj=filename,
+                    path_in_repo=filename,
+                    repo_id=HF_DATASET_REPO,
+                    repo_type="dataset",
+                    token=HF_TOKEN
+                )
+                last_upload_time = datetime.now().strftime('%H:%M:%S')
+                last_hf_upload_time_seconds = time.time()
+                print(f"🚀 Successfully Synced {filename} to Hugging Face Dataset: {HF_DATASET_REPO}", flush=True)
+            except Exception as e:
+                print(f"⚠️ HF Upload Failed: {e}", flush=True)
 
 # --- LOB SYNC & AGGREGATION ---
 def apply_lob_event(event):
