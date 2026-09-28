@@ -378,7 +378,7 @@ async def snapshot_recording_loop():
             await asyncio.to_thread(save_parquet_chunk)
             
             # 2. Check if it's time to upload (Every 30 mins)
-            if time.time() - last_hf_upload_time_seconds > 1800:
+            if time.time() - last_hf_upload_time_seconds > 10800:  # 3 hours = ~4.8 GB/month (within 5GB HF free limit)
                 threading.Thread(target=upload_zip_to_huggingface, daemon=True).start()
                 last_hf_upload_time_seconds = time.time()
 
