@@ -114,6 +114,7 @@ def cleanup_lob_memory():
 
 parquet_buffer = []
 last_hf_upload_time_seconds = time.time()
+uploaded_chunks = set()  # Track which chunks already uploaded to HF (avoid re-upload!)
 
 # ==============================================================================
 # 🗂️ CHUNK + ZIP LOGIC (NIFTY PROVEN)
@@ -170,66 +171,86 @@ def create_daily_zip(date_str=None):
         print(f"❌ ZIP error: {e}", flush=True)
         return None
 
-def upload_zip_to_huggingface():
+def upload_new_chunks_to_hf():
+    """200 IQ: Upload ONLY new chunks (not yet uploaded) to HF.
+    Each chunk = ~100KB. 15 min interval = ~192 MB/month. Well under 5GB!"""
     global last_upload_time
     if not HF_TOKEN or not HF_DATASET_REPO: return
-    
+
     date_str = get_trading_date_str()
-    zip_path = create_daily_zip(date_str)
-    if not zip_path or not os.path.exists(zip_path): return
-    
+    date_dir = os.path.join(DATA_DIR, date_str)
+    if not os.path.exists(date_dir): return
+
+    all_chunks = sorted(glob.glob(os.path.join(date_dir, "binance_MS_chunk_*.parquet")))
+    new_chunks = [f for f in all_chunks if f not in uploaded_chunks]
+    if not new_chunks:
+        print(f"[HF SYNC] No new chunks to upload.", flush=True)
+        return
+
     try:
         api = HfApi(token=HF_TOKEN)
-        zip_name = os.path.basename(zip_path)
-        api.upload_file(
-            path_or_fileobj=zip_path,
-            path_in_repo=f"daily_vault/{zip_name}",
-            repo_id=HF_DATASET_REPO,
-            repo_type="dataset",
-            token=HF_TOKEN
-        )
+        for chunk_file in new_chunks:
+            chunk_name = os.path.basename(chunk_file)
+            api.upload_file(
+                path_or_fileobj=chunk_file,
+                path_in_repo=f"chunks/{date_str}/{chunk_name}",
+                repo_id=HF_DATASET_REPO,
+                repo_type="dataset",
+                token=HF_TOKEN
+            )
+            uploaded_chunks.add(chunk_file)
         last_upload_time = datetime.now().strftime('%H:%M:%S')
-        print(f"[{last_upload_time}] 🚀 [HF SYNC] ZIP uploaded: {zip_name}", flush=True)
+        print(f"[{last_upload_time}] 🚀 [HF SYNC] {len(new_chunks)} chunk(s) uploaded! (~{len(new_chunks)*100}KB bandwidth used)", flush=True)
     except Exception as e:
-        print(f"⚠️ HF Upload Failed: {e}", flush=True)
+        print(f"⚠️ HF Chunk Upload Failed: {e}", flush=True)
 
 def resume_from_hf():
+    """On restart, download today's individual chunks from HF to resume data collection."""
     global total_rows_collected
     if not HF_TOKEN or not HF_DATASET_REPO: return
     date_str = get_trading_date_str()
     date_dir = os.path.join(DATA_DIR, date_str)
     os.makedirs(date_dir, exist_ok=True)
 
-    existing_chunks = glob.glob(os.path.join(date_dir, "binance_MS_chunk_*.parquet"))
+    # If chunks already on disk, just count and resume
+    existing_chunks = sorted(glob.glob(os.path.join(date_dir, "binance_MS_chunk_*.parquet")))
     if existing_chunks:
-        print(f"✅ {len(existing_chunks)} chunk(s) already on disk for {date_str}. Resuming!", flush=True)
         for c in existing_chunks:
             try: total_rows_collected += pq.read_metadata(c).num_rows
             except: pass
+        print(f"✅ {len(existing_chunks)} chunk(s) already on disk. Resuming with {total_rows_collected} rows!", flush=True)
+        # Mark existing disk chunks as already uploaded so we don't re-upload them
+        uploaded_chunks.update(existing_chunks)
         return
 
-    zip_name = f"binance_ml_data_MS_{date_str}.zip"
+    # Try downloading individual chunks from HF
     try:
-        print(f"🔄 Checking HF for {zip_name}...", flush=True)
-        zip_path_hf = hf_hub_download(
-            repo_id=HF_DATASET_REPO,
-            filename=f"daily_vault/{zip_name}",
-            repo_type="dataset",
-            token=HF_TOKEN
-        )
-        local_zip = os.path.join(DATA_DIR, zip_name)
-        shutil.copy(zip_path_hf, local_zip)
-        with zipfile.ZipFile(local_zip, 'r') as zf:
-            zf.extractall(date_dir)
-        extracted = glob.glob(os.path.join(date_dir, "*.parquet"))
-        
-        for c in extracted:
-            try: total_rows_collected += pq.read_metadata(c).num_rows
+        print(f"🔄 Checking HF for today's chunks (chunks/{date_str}/)...", flush=True)
+        api = HfApi(token=HF_TOKEN)
+        all_files = api.list_repo_files(repo_id=HF_DATASET_REPO, repo_type="dataset", token=HF_TOKEN)
+        today_chunks = sorted([f for f in all_files if f.startswith(f"chunks/{date_str}/binance_MS_chunk_")])
+
+        if not today_chunks:
+            print(f"ℹ️ No chunks on HF for {date_str}. Starting fresh.", flush=True)
+            return
+
+        for hf_path in today_chunks:
+            chunk_name = os.path.basename(hf_path)
+            local_path = os.path.join(date_dir, chunk_name)
+            downloaded = hf_hub_download(
+                repo_id=HF_DATASET_REPO,
+                filename=hf_path,
+                repo_type="dataset",
+                token=HF_TOKEN
+            )
+            shutil.copy(downloaded, local_path)
+            try: total_rows_collected += pq.read_metadata(local_path).num_rows
             except: pass
-            
-        print(f"✅ Resumed from HF! Extracted {len(extracted)} file(s) for {date_str}. Starting with {total_rows_collected} rows.", flush=True)
+            uploaded_chunks.add(local_path)  # Mark as already uploaded!
+
+        print(f"✅ Resumed {len(today_chunks)} chunk(s) from HF! Starting with {total_rows_collected} rows.", flush=True)
     except Exception as e:
-        print(f"ℹ️ No ZIP on HF for {date_str}. Starting fresh.", flush=True)
+        print(f"ℹ️ Could not resume from HF: {e}. Starting fresh.", flush=True)
 
 # ==============================================================================
 # 📊 BINANCE LOB LOGIC
@@ -374,12 +395,12 @@ async def snapshot_recording_loop():
         
         parquet_buffer.append(row)
         if len(parquet_buffer) >= 60:
-            # 1. Save chunk
+            # 1. Save chunk to disk (every 1 min)
             await asyncio.to_thread(save_parquet_chunk)
             
-            # 2. Check if it's time to upload (Every 30 mins)
-            if time.time() - last_hf_upload_time_seconds > 10800:  # 3 hours = ~4.8 GB/month (within 5GB HF free limit)
-                threading.Thread(target=upload_zip_to_huggingface, daemon=True).start()
+            # 2. Upload NEW chunks to HF every 15 min (~100KB each = ~192MB/month)
+            if time.time() - last_hf_upload_time_seconds > 900:  # 15 min
+                threading.Thread(target=upload_new_chunks_to_hf, daemon=True).start()
                 last_hf_upload_time_seconds = time.time()
 
 async def main():
