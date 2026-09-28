@@ -66,7 +66,7 @@ HF_DATASET_REPO = os.environ.get("HF_DATASET_REPO", "btcusddata/binance-ai-data"
 if HF_TOKEN and HF_DATASET_REPO:
     try:
         api = HfApi(token=HF_TOKEN)
-        create_repo(repo_id=HF_DATASET_REPO, repo_type="dataset", token=HF_TOKEN, private=True, exist_ok=True)
+        create_repo(repo_id=HF_DATASET_REPO, repo_type="dataset", token=HF_TOKEN, exist_ok=True)
         print(f"✅ Hugging Face Dataset {HF_DATASET_REPO} is ready for sync!")
     except Exception as e:
         print(f"⚠️ Could not verify HF Repo: {e}")
@@ -96,6 +96,21 @@ buffered_events = []
 is_synced = False
 trades_q = deque()
 liqs_q = deque()
+
+# --- LOB MEMORY CLEANUP (Run every 5 mins to prevent RAM leak) ---
+lob_cleanup_last_time = time.time()
+def cleanup_lob_memory():
+    global lob_cleanup_last_time
+    if time.time() - lob_cleanup_last_time < 300: return  # Every 5 mins
+    before_bids = len(LOB["bids"])
+    before_asks = len(LOB["asks"])
+    LOB["bids"] = {p: v for p, v in LOB["bids"].items() if v > 0}
+    LOB["asks"] = {p: v for p, v in LOB["asks"].items() if v > 0}
+    freed = (before_bids - len(LOB["bids"])) + (before_asks - len(LOB["asks"]))
+    if freed > 0:
+        print(f"🧹 LOB Cleanup: Freed {freed} zero-volume entries. Bids={len(LOB['bids'])}, Asks={len(LOB['asks'])}", flush=True)
+    lob_cleanup_last_time = time.time()
+    gc.collect()
 
 parquet_buffer = []
 last_hf_upload_time_seconds = time.time()
@@ -276,6 +291,7 @@ def fetch_snapshot():
     for e in buffered_events:
         if e['u'] <= last_update_id: continue
         apply_lob_event(e)
+    buffered_events.clear()  # ✅ CRITICAL: Free memory after sync!
     is_synced = True
     print("✅ Local Orderbook (LOB) Synced!", flush=True)
 
@@ -335,6 +351,7 @@ async def snapshot_recording_loop():
         if not is_synced or live_state["current_price"] == 0: continue
         
         clean_queues()
+        cleanup_lob_memory()  # ✅ CRITICAL: Prevent LOB RAM leak!
         ts = datetime.now()
         bids_shape, asks_shape = aggregate_relative_lob(coverage_percent=0.01, buckets=500)
         
