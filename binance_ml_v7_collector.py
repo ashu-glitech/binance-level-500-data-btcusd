@@ -368,37 +368,25 @@ def fetch_snapshot():
             print(f"❌ Proxy/Connection Error fetching snapshot: {e}. Retrying in 5s...", flush=True)
             time.sleep(5)
 
-async def trades_liqs_stream():
-    """Trades/Liqs/Klines WebSocket with AUTO-RECONNECT."""
-    stream_list = [
-        f"{SYMBOL_FUTURES}@aggTrade",
-        f"{SYMBOL_FUTURES}@forceOrder",
-        f"{SYMBOL_FUTURES}@kline_1m",
-        f"{SYMBOL_FUTURES}@kline_3m",
-        f"{SYMBOL_FUTURES}@kline_5m"
-    ]
-    url = "wss://fstream.binance.com/ws"
-    while True:  # ✅ INFINITE RECONNECT LOOP
+async def single_stream_worker(stream_name):
+    """Connects to a single Binance WS stream to avoid silent drops on combined streams."""
+    url = f"wss://fstream.binance.com/ws/{stream_name}"
+    while True:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.ws_connect(url, proxy=None, heartbeat=30, timeout=10, receive_timeout=30) as ws:
-                    print("🟢 Trades, Liqs, Klines Connected! Sending SUBSCRIBE...", flush=True)
-                    sub_msg = {"method": "SUBSCRIBE", "params": stream_list, "id": 1}
-                    await ws.send_json(sub_msg)
-                    
+                    print(f"🟢 Connected to {stream_name}!", flush=True)
                     messages_received = 0
+                    
                     async for msg in ws:
                         messages_received += 1
                         if messages_received % 1000 == 0:
-                            print(f"📊 Trades stream flowing... ({messages_received} msgs)", flush=True)
+                            print(f"📊 {stream_name} flowing... ({messages_received} msgs)", flush=True)
                         
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             data = json.loads(msg.data)
+                            if "e" not in data: continue
                             
-                            # Ignore subscription success responses
-                            if "e" not in data: 
-                                continue
-                                
                             event = data.get("e", "")
                             now_ms = time.time() * 1000
                             
@@ -421,12 +409,11 @@ async def trades_liqs_stream():
                                     elif interval == "5m": live_state["body_5m"] = body
                                 except: pass
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR): 
-                            print(f"⚠️ Trades stream closed or error: {msg}", flush=True)
+                            print(f"⚠️ {stream_name} stream closed or error: {msg}", flush=True)
                             break
         except Exception as e:
-            print(f"⚠️ Trades/Klines Stream dropped: {e}. Reconnecting in 5s...", flush=True)
-        print("🔄 Reconnecting Trades/Klines stream in 5s...", flush=True)
-        await asyncio.sleep(5)  # Wait 5 sec then reconnect
+            print(f"⚠️ {stream_name} dropped: {e}. Reconnecting in 5s...", flush=True)
+        await asyncio.sleep(5)
 
 async def fetch_oi_funding_loop():
     while True:
@@ -517,7 +504,11 @@ async def main():
     await asyncio.to_thread(fetch_snapshot)
     
     await asyncio.gather(
-        trades_liqs_stream(),
+        single_stream_worker(f"{SYMBOL_FUTURES}@aggTrade"),
+        single_stream_worker(f"{SYMBOL_FUTURES}@forceOrder"),
+        single_stream_worker(f"{SYMBOL_FUTURES}@kline_1m"),
+        single_stream_worker(f"{SYMBOL_FUTURES}@kline_3m"),
+        single_stream_worker(f"{SYMBOL_FUTURES}@kline_5m"),
         fetch_oi_funding_loop(),
         snapshot_recording_loop()
     )
