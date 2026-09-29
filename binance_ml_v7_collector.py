@@ -377,7 +377,7 @@ async def trades_liqs_stream():
         f"{SYMBOL_FUTURES}@kline_3m",
         f"{SYMBOL_FUTURES}@kline_5m"
     ]
-    url = "wss://fstream.binance.com/stream"
+    url = "wss://fstream.binance.com/ws"
     while True:  # ✅ INFINITE RECONNECT LOOP
         try:
             async with aiohttp.ClientSession() as session:
@@ -395,27 +395,30 @@ async def trades_liqs_stream():
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             data = json.loads(msg.data)
                             
-                            # Handle stream data vs response data
-                            if "stream" not in data: 
-                                print(f"ℹ️ WS Response: {data}", flush=True)
+                            # Ignore subscription success responses
+                            if "e" not in data: 
                                 continue
                                 
-                            stream, d = data.get("stream", ""), data.get("data", {})
+                            event = data.get("e", "")
                             now_ms = time.time() * 1000
-                            if "@aggTrade" in stream:
-                                is_buy = not d.get("m", True)
-                                trades_q.append((now_ms, float(d.get("q", 0)), is_buy))
-                                live_state["current_price"] = float(d.get("p", 0))
-                            elif "@forceOrder" in stream:
-                                o = d.get("o", {})
+                            
+                            if event == "aggTrade":
+                                is_buy = not data.get("m", True)
+                                trades_q.append((now_ms, float(data.get("q", 0)), is_buy))
+                                live_state["current_price"] = float(data.get("p", 0))
+                                
+                            elif event == "forceOrder":
+                                o = data.get("o", {})
                                 liqs_q.append((now_ms, float(o.get("q", 0)), o.get("S") == "SELL"))
-                            elif "@kline" in stream:
-                                k = d.get("k", {})
+                                
+                            elif event == "kline":
+                                k = data.get("k", {})
                                 try:
                                     body = float(k.get("c", 0)) - float(k.get("o", 0))
-                                    if "kline_1m" in stream: live_state["body_1m"] = body
-                                    elif "kline_3m" in stream: live_state["body_3m"] = body
-                                    elif "kline_5m" in stream: live_state["body_5m"] = body
+                                    interval = k.get("i", "")
+                                    if interval == "1m": live_state["body_1m"] = body
+                                    elif interval == "3m": live_state["body_3m"] = body
+                                    elif interval == "5m": live_state["body_5m"] = body
                                 except: pass
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR): 
                             print(f"⚠️ Trades stream closed or error: {msg}", flush=True)
