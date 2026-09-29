@@ -348,7 +348,7 @@ def get_l1_spread():
 async def lob_stream():
     """LOB WebSocket with AUTO-RECONNECT. Never dies!"""
     global is_synced, last_update_id
-    url = f"wss://fstream.binance.com/ws/{SYMBOL_FUTURES}@depth"
+    url = f"wss://fstream.binance.com/market/ws/{SYMBOL_FUTURES}@depth"
     while True:  # ✅ INFINITE RECONNECT LOOP
         try:
             async with aiohttp.ClientSession() as session:
@@ -402,7 +402,7 @@ def fetch_snapshot():
 async def trades_liqs_worker():
     """Combined Trade and Liquidation Stream for Binance Futures with Auto-Reconnect."""
     streams = f"{SYMBOL_FUTURES}@aggTrade/{SYMBOL_FUTURES}@forceOrder"
-    url = f"wss://fstream.binance.com/stream?streams={streams}"
+    url = f"wss://fstream.binance.com/market/stream?streams={streams}"
     while True:
         try:
             async with aiohttp.ClientSession() as session:
