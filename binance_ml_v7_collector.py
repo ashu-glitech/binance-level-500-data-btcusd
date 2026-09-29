@@ -89,9 +89,15 @@ class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
 
 def start_health_server():
     PORT = int(os.environ.get("PORT", 10000))
-    with socketserver.TCPServer(("", PORT), HealthCheckHandler) as httpd:
-        print(f"🟢 [RENDER] Dummy Health Server listening on port {PORT}...", flush=True)
-        httpd.serve_forever()
+    socketserver.TCPServer.allow_reuse_address = True
+    while True:
+        try:
+            with socketserver.TCPServer(("", PORT), HealthCheckHandler) as httpd:
+                print(f"🟢 [RENDER] Dummy Health Server listening on port {PORT}...", flush=True)
+                httpd.serve_forever()
+        except Exception as e:
+            print(f"⚠️ Health server error ({e}), retrying port {PORT} in 2s...", flush=True)
+            time.sleep(2)
 
 # HF API Setup
 HF_TOKEN = os.environ.get("HF_TOKEN", "").strip()  # ✅ CRITICAL: Strip hidden spaces/newlines!
