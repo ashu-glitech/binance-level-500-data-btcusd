@@ -283,18 +283,23 @@ def get_l1_spread():
     return (asks[0] - bids[0]) if bids and asks else 0.0
 
 async def lob_stream():
+    """LOB WebSocket with AUTO-RECONNECT. Never dies!"""
     global is_synced, last_update_id
     url = f"wss://fstream.binance.com/ws/{SYMBOL_FUTURES}@depth"
-    proxy_str = None
-    async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(url, proxy=proxy_str) as ws:
-            print("🌊 LOB True Millisecond Stream Connected!", flush=True)
-            async for msg in ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    event = json.loads(msg.data)
-                    if not is_synced: buffered_events.append(event)
-                    else: apply_lob_event(event)
-                elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR): break
+    while True:  # ✅ INFINITE RECONNECT LOOP
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(url, proxy=None, heartbeat=30) as ws:
+                    print("🌊 LOB True Millisecond Stream Connected!", flush=True)
+                    async for msg in ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            event = json.loads(msg.data)
+                            if not is_synced: buffered_events.append(event)
+                            else: apply_lob_event(event)
+                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR): break
+        except Exception as e:
+            print(f"⚠️ LOB Stream dropped: {e}. Reconnecting in 5s...", flush=True)
+        await asyncio.sleep(5)  # Wait 5 sec then reconnect
 
 def fetch_snapshot():
     global last_update_id, is_synced
@@ -317,31 +322,40 @@ def fetch_snapshot():
     print("✅ Local Orderbook (LOB) Synced!", flush=True)
 
 async def trades_liqs_stream():
+    """Trades/Liqs/Klines WebSocket with AUTO-RECONNECT.
+    This is CRITICAL - without it, candle body and trade volume show 0 forever!"""
     streams = f"{SYMBOL_FUTURES}@aggTrade/{SYMBOL_FUTURES}@forceOrder/{SYMBOL_FUTURES}@kline_1m/{SYMBOL_FUTURES}@kline_3m/{SYMBOL_FUTURES}@kline_5m"
     url = f"wss://fstream.binance.com/stream?streams={streams}"
-    proxy_str = None
-    async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(url, proxy=proxy_str) as ws:
-            print("🟢 Trades, Liqs, Klines Connected!", flush=True)
-            async for msg in ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    data = json.loads(msg.data)
-                    stream, d = data.get("stream", ""), data.get("data", {})
-                    now_ms = time.time() * 1000
-                    if "@aggTrade" in stream:
-                        is_buy = not d.get("m", True)
-                        trades_q.append((now_ms, float(d.get("q", 0)), is_buy))
-                        live_state["current_price"] = float(d.get("p", 0))
-                    elif "@forceOrder" in stream:
-                        o = d.get("o", {})
-                        liqs_q.append((now_ms, float(o.get("q", 0)), o.get("S") == "SELL"))
-                    elif "@kline" in stream:
-                        k = d.get("k", {})
-                        body = float(k.get("c")) - float(k.get("o"))
-                        if "1m" in stream: live_state["body_1m"] = body
-                        elif "3m" in stream: live_state["body_3m"] = body
-                        elif "5m" in stream: live_state["body_5m"] = body
-                elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR): break
+    while True:  # ✅ INFINITE RECONNECT LOOP
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(url, proxy=None, heartbeat=30) as ws:
+                    print("🟢 Trades, Liqs, Klines Connected!", flush=True)
+                    async for msg in ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            data = json.loads(msg.data)
+                            stream, d = data.get("stream", ""), data.get("data", {})
+                            now_ms = time.time() * 1000
+                            if "@aggTrade" in stream:
+                                is_buy = not d.get("m", True)
+                                trades_q.append((now_ms, float(d.get("q", 0)), is_buy))
+                                live_state["current_price"] = float(d.get("p", 0))
+                            elif "@forceOrder" in stream:
+                                o = d.get("o", {})
+                                liqs_q.append((now_ms, float(o.get("q", 0)), o.get("S") == "SELL"))
+                            elif "@kline" in stream:
+                                k = d.get("k", {})
+                                try:
+                                    body = float(k.get("c", 0)) - float(k.get("o", 0))
+                                    if "kline_1m" in stream: live_state["body_1m"] = body
+                                    elif "kline_3m" in stream: live_state["body_3m"] = body
+                                    elif "kline_5m" in stream: live_state["body_5m"] = body
+                                except: pass
+                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR): break
+        except Exception as e:
+            print(f"⚠️ Trades/Klines Stream dropped: {e}. Reconnecting in 5s...", flush=True)
+        print("🔄 Reconnecting Trades/Klines stream in 5s...", flush=True)
+        await asyncio.sleep(5)  # Wait 5 sec then reconnect
 
 async def fetch_oi_funding_loop():
     while True:
