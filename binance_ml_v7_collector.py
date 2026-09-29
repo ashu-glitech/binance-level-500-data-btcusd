@@ -329,7 +329,7 @@ async def lob_stream():
     while True:  # ✅ INFINITE RECONNECT LOOP
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.ws_connect(url, proxy=None, heartbeat=30) as ws:
+                async with session.ws_connect(url, proxy=None, heartbeat=30, timeout=10, receive_timeout=30) as ws:
                     print("🌊 LOB True Millisecond Stream Connected!", flush=True)
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
@@ -376,9 +376,13 @@ async def trades_liqs_stream():
     while True:  # ✅ INFINITE RECONNECT LOOP
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.ws_connect(url, proxy=None, heartbeat=30) as ws:
+                async with session.ws_connect(url, proxy=None, heartbeat=30, timeout=10, receive_timeout=30) as ws:
                     print("🟢 Trades, Liqs, Klines Connected!", flush=True)
+                    messages_received = 0
                     async for msg in ws:
+                        messages_received += 1
+                        if messages_received % 1000 == 0:
+                            print(f"📊 Trades stream flowing... ({messages_received} msgs)", flush=True)
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             data = json.loads(msg.data)
                             stream, d = data.get("stream", ""), data.get("data", {})
@@ -398,7 +402,9 @@ async def trades_liqs_stream():
                                     elif "kline_3m" in stream: live_state["body_3m"] = body
                                     elif "kline_5m" in stream: live_state["body_5m"] = body
                                 except: pass
-                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR): break
+                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR): 
+                            print(f"⚠️ Trades stream closed or error: {msg}", flush=True)
+                            break
         except Exception as e:
             print(f"⚠️ Trades/Klines Stream dropped: {e}. Reconnecting in 5s...", flush=True)
         print("🔄 Reconnecting Trades/Klines stream in 5s...", flush=True)
