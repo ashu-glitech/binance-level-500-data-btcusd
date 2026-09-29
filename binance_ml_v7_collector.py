@@ -403,18 +403,19 @@ def fetch_snapshot():
 
 
 
-async def single_stream_worker(stream_name):
-    """Connects to a single Binance WS stream (Trades/Liqs). Accumulates all market orders."""
-    url = f"wss://fstream.binance.com/ws/{stream_name}"
+async def trades_liqs_worker():
+    """Combined Trade and Liquidation Stream for Binance Futures with Auto-Reconnect."""
+    streams = f"{SYMBOL_FUTURES}@aggTrade/{SYMBOL_FUTURES}@forceOrder"
+    url = f"wss://fstream.binance.com/stream?streams={streams}"
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.ws_connect(url, proxy=None, heartbeat=30, timeout=10, receive_timeout=30) as ws:
-                    print(f"🟢 Connected to {stream_name}!", flush=True)
+                async with session.ws_connect(url, proxy=None, heartbeat=20) as ws:
+                    print(f"🟢 Connected to Trades & Liquidations ({streams})!", flush=True)
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
-                            data = json.loads(msg.data)
-                            if "e" not in data: continue
+                            raw = json.loads(msg.data)
+                            data = raw.get("data", raw)
                             event = data.get("e", "")
                             
                             if event == "aggTrade":
@@ -438,8 +439,8 @@ async def single_stream_worker(stream_name):
                                     accumulators["liqs_short"] += qty
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR): break
         except Exception as e:
-            print(f"⚠️ Stream {stream_name} dropped: {e}. Reconnecting in 5s...", flush=True)
-        await asyncio.sleep(5)
+            print(f"⚠️ Trades/Liqs stream dropped: {e}. Reconnecting in 3s...", flush=True)
+        await asyncio.sleep(3)
 
 async def fetch_oi_funding_loop():
     while True:
@@ -555,8 +556,7 @@ async def main():
     await asyncio.to_thread(fetch_snapshot)
     
     await asyncio.gather(
-        single_stream_worker(f"{SYMBOL_FUTURES}@aggTrade"),
-        single_stream_worker(f"{SYMBOL_FUTURES}@forceOrder"),
+        trades_liqs_worker(),
         fetch_oi_funding_loop(),
         snapshot_recording_loop()
     )
