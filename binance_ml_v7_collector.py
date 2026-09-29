@@ -33,6 +33,19 @@ class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-type", "text/html")
         self.end_headers()
     def do_GET(self):
+        if self.path == "/debug":
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            debug_info = {
+                "trades_q_len": len(trades_q),
+                "liqs_q_len": len(liqs_q),
+                "lob_bids_len": len(LOB["bids"]),
+                "live_state": live_state
+            }
+            self.wfile.write(json.dumps(debug_info).encode("utf-8"))
+            return
+
         if self.path == "/download_latest":
             date_str = get_trading_date_str()
             date_dir = os.path.join(DATA_DIR, date_str)
