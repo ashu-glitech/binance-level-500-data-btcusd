@@ -38,8 +38,7 @@ class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-type", "application/json")
             self.end_headers()
             debug_info = {
-                "trades_q_len": len(trades_q),
-                "liqs_q_len": len(liqs_q),
+                "accumulators": accumulators,
                 "lob_bids_len": len(LOB["bids"]),
                 "live_state": live_state
             }
@@ -127,8 +126,15 @@ LOB = {"bids": {}, "asks": {}}
 last_update_id = 0
 buffered_events = []
 is_synced = False
-trades_q = deque()
-liqs_q = deque()
+
+# 1-Second Real-Time Accumulators (guarantees 100% of trades are captured)
+accumulators = {
+    "buy_vol": 0.0,
+    "sell_vol": 0.0,
+    "liqs_long": 0.0,
+    "liqs_short": 0.0,
+    "trade_count": 0
+}
 
 # --- LOB MEMORY CLEANUP (Run every 5 mins to prevent RAM leak) ---
 lob_cleanup_last_time = time.time()
@@ -398,7 +404,7 @@ def fetch_snapshot():
 
 
 async def single_stream_worker(stream_name):
-    """Connects to a single Binance WS stream (Trades/Liqs). Klines are removed."""
+    """Connects to a single Binance WS stream (Trades/Liqs). Accumulates all market orders."""
     url = f"wss://fstream.binance.com/ws/{stream_name}"
     while True:
         try:
@@ -410,16 +416,29 @@ async def single_stream_worker(stream_name):
                             data = json.loads(msg.data)
                             if "e" not in data: continue
                             event = data.get("e", "")
-                            now_ms = time.time() * 1000
                             
                             if event == "aggTrade":
+                                qty = float(data.get("q", 0))
+                                price = float(data.get("p", 0))
+                                if price > 0:
+                                    live_state["current_price"] = price
                                 is_buy = not data.get("m", True)
-                                trades_q.append((now_ms, float(data.get("q", 0)), is_buy))
+                                if is_buy:
+                                    accumulators["buy_vol"] += qty
+                                else:
+                                    accumulators["sell_vol"] += qty
+                                accumulators["trade_count"] += 1
+                                
                             elif event == "forceOrder":
                                 o = data.get("o", {})
-                                liqs_q.append((now_ms, float(o.get("q", 0)), o.get("S") == "SELL"))
+                                qty = float(o.get("q", 0))
+                                if o.get("S") == "SELL":
+                                    accumulators["liqs_long"] += qty
+                                else:
+                                    accumulators["liqs_short"] += qty
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR): break
-        except Exception as e: pass
+        except Exception as e:
+            print(f"⚠️ Stream {stream_name} dropped: {e}. Reconnecting in 5s...", flush=True)
         await asyncio.sleep(5)
 
 async def fetch_oi_funding_loop():
@@ -432,14 +451,16 @@ async def fetch_oi_funding_loop():
         except: pass
         await asyncio.sleep(10)
 
-def clean_queues():
-    cutoff = time.time() * 1000 - 1000
-    while trades_q and trades_q[0][0] < cutoff: trades_q.popleft()
-    while liqs_q and liqs_q[0][0] < cutoff: liqs_q.popleft()
-    live_state["agg_buy_vol_1s"] = sum(v for t, v, is_buy in trades_q if is_buy)
-    live_state["agg_sell_vol_1s"] = sum(v for t, v, is_buy in trades_q if not is_buy)
-    live_state["liqs_long_vol_1s"] = sum(v for t, v, is_long in liqs_q if is_long)
-    live_state["liqs_short_vol_1s"] = sum(v for t, v, is_long in liqs_q if not is_long)
+def harvest_and_reset_accumulators():
+    live_state["agg_buy_vol_1s"] = round(accumulators["buy_vol"], 3)
+    live_state["agg_sell_vol_1s"] = round(accumulators["sell_vol"], 3)
+    live_state["liqs_long_vol_1s"] = round(accumulators["liqs_long"], 3)
+    live_state["liqs_short_vol_1s"] = round(accumulators["liqs_short"], 3)
+    accumulators["buy_vol"] = 0.0
+    accumulators["sell_vol"] = 0.0
+    accumulators["liqs_long"] = 0.0
+    accumulators["liqs_short"] = 0.0
+    accumulators["trade_count"] = 0
 
 async def snapshot_recording_loop():
     global last_hf_upload_time_seconds
@@ -486,7 +507,7 @@ async def snapshot_recording_loop():
             live_state["body_3m"] = curr_p - candle_tracker["3m"]["open"]
             live_state["body_5m"] = curr_p - candle_tracker["5m"]["open"]
         
-        clean_queues()
+        harvest_and_reset_accumulators()
         cleanup_lob_memory()  # ✅ CRITICAL: Prevent LOB RAM leak!
         ts = datetime.now()
         bids_shape, asks_shape = aggregate_relative_lob(coverage_percent=0.01, buckets=500)
