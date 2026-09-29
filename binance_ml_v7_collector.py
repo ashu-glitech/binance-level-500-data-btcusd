@@ -369,22 +369,37 @@ def fetch_snapshot():
             time.sleep(5)
 
 async def trades_liqs_stream():
-    """Trades/Liqs/Klines WebSocket with AUTO-RECONNECT.
-    This is CRITICAL - without it, candle body and trade volume show 0 forever!"""
-    streams = f"{SYMBOL_FUTURES}@aggTrade/{SYMBOL_FUTURES}@forceOrder/{SYMBOL_FUTURES}@kline_1m/{SYMBOL_FUTURES}@kline_3m/{SYMBOL_FUTURES}@kline_5m"
-    url = f"wss://fstream.binance.com/stream?streams={streams}"
+    """Trades/Liqs/Klines WebSocket with AUTO-RECONNECT."""
+    stream_list = [
+        f"{SYMBOL_FUTURES}@aggTrade",
+        f"{SYMBOL_FUTURES}@forceOrder",
+        f"{SYMBOL_FUTURES}@kline_1m",
+        f"{SYMBOL_FUTURES}@kline_3m",
+        f"{SYMBOL_FUTURES}@kline_5m"
+    ]
+    url = "wss://fstream.binance.com/ws"
     while True:  # ✅ INFINITE RECONNECT LOOP
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.ws_connect(url, proxy=None, heartbeat=30, timeout=10, receive_timeout=30) as ws:
-                    print("🟢 Trades, Liqs, Klines Connected!", flush=True)
+                    print("🟢 Trades, Liqs, Klines Connected! Sending SUBSCRIBE...", flush=True)
+                    sub_msg = {"method": "SUBSCRIBE", "params": stream_list, "id": 1}
+                    await ws.send_json(sub_msg)
+                    
                     messages_received = 0
                     async for msg in ws:
                         messages_received += 1
                         if messages_received % 1000 == 0:
                             print(f"📊 Trades stream flowing... ({messages_received} msgs)", flush=True)
+                        
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             data = json.loads(msg.data)
+                            
+                            # Handle stream data vs response data
+                            if "stream" not in data: 
+                                print(f"ℹ️ WS Response: {data}", flush=True)
+                                continue
+                                
                             stream, d = data.get("stream", ""), data.get("data", {})
                             now_ms = time.time() * 1000
                             if "@aggTrade" in stream:
