@@ -33,12 +33,30 @@ class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-type", "text/html")
         self.end_headers()
     def do_GET(self):
+        if self.path == "/download_latest":
+            date_str = get_trading_date_str()
+            date_dir = os.path.join(DATA_DIR, date_str)
+            files = sorted(glob.glob(os.path.join(date_dir, "binance_MS_chunk_*.parquet")))
+            if files:
+                latest_file = files[-1]
+                with open(latest_file, "rb") as f: content = f.read()
+                self.send_response(200)
+                self.send_header("Content-type", "application/octet-stream")
+                self.send_header("Content-Disposition", f"attachment; filename={os.path.basename(latest_file)}")
+                self.end_headers()
+                self.wfile.write(content)
+            else:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"No data yet. Wait 1 minute.")
+            return
+
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
         html = f"""<html>
         <head><title>Binance LOB Collector Dashboard</title><meta http-equiv="refresh" content="5">
-        <style>body {{ background-color: #0f172a; color: #e2e8f0; font-family: 'Inter', sans-serif; margin: 0; padding: 40px; }} .container {{ max-width: 800px; margin: 0 auto; background: #1e293b; padding: 30px; border-radius: 15px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }} h1 {{ color: #38bdf8; text-align: center; font-size: 32px; margin-bottom: 5px; }} h3 {{ color: #94a3b8; text-align: center; margin-top: 0; margin-bottom: 30px; font-weight: normal; }} .grid {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }} .card {{ background: #0f172a; padding: 20px; border-radius: 10px; border-left: 5px solid #38bdf8; }} .card h2 {{ font-size: 14px; color: #94a3b8; margin: 0 0 10px 0; text-transform: uppercase; letter-spacing: 1px; }} .card p {{ font-size: 28px; font-weight: bold; margin: 0; color: #f8fafc; }} .status-badge {{ background: #22c55e; color: white; padding: 5px 15px; border-radius: 20px; font-size: 14px; font-weight: bold; }} .footer {{ text-align: center; margin-top: 30px; color: #64748b; font-size: 14px; }}</style></head>
+        <style>body {{ background-color: #0f172a; color: #e2e8f0; font-family: 'Inter', sans-serif; margin: 0; padding: 40px; }} .container {{ max-width: 800px; margin: 0 auto; background: #1e293b; padding: 30px; border-radius: 15px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }} h1 {{ color: #38bdf8; text-align: center; font-size: 32px; margin-bottom: 5px; }} h3 {{ color: #94a3b8; text-align: center; margin-top: 0; margin-bottom: 30px; font-weight: normal; }} .grid {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }} .card {{ background: #0f172a; padding: 20px; border-radius: 10px; border-left: 5px solid #38bdf8; }} .card h2 {{ font-size: 14px; color: #94a3b8; margin: 0 0 10px 0; text-transform: uppercase; letter-spacing: 1px; }} .card p {{ font-size: 28px; font-weight: bold; margin: 0; color: #f8fafc; }} .status-badge {{ background: #22c55e; color: white; padding: 5px 15px; border-radius: 20px; font-size: 14px; font-weight: bold; }} .footer {{ text-align: center; margin-top: 30px; color: #64748b; font-size: 14px; }} .btn {{ display: inline-block; background: #3b82f6; color: white; text-decoration: none; padding: 10px 20px; border-radius: 5px; margin-top: 20px; font-weight: bold; transition: background 0.3s; }} .btn:hover {{ background: #2563eb; }}</style></head>
         <body><div class="container"><h1>Binance AI Collector</h1><h3>HuggingFace Auto-Sync 🚀 (Chunk+ZIP Formula)</h3>
         <div style="text-align: center; margin-bottom: 30px;"><span class="status-badge">{"🟢 LOB SYNCED" if is_synced else "⏳ WAITING FOR SNAPSHOT"}</span></div>
         <div class="grid">
@@ -49,6 +67,8 @@ class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
         <div class="card" style="border-color: #ec4899;"><h2>Open Interest</h2><p>{live_state.get('open_interest', 0):,.2f}</p></div>
         <div class="card" style="border-color: #14b8a6;"><h2>Funding Rate</h2><p>{live_state.get('funding_rate', 0):.6f}</p></div>
         </div>
+        </div>
+        <div style="text-align: center;"><a href="/download_latest" class="btn">📥 Download Latest 1m Chunk</a></div>
         <div class="footer">Auto-refreshing every 5 seconds. Data streaming directly to {HF_DATASET_REPO}</div>
         </div></body></html>"""
         self.wfile.write(html.encode("utf-8"))
