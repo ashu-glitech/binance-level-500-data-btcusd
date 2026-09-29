@@ -311,6 +311,14 @@ def resume_from_hf():
 def apply_lob_event(event):
     for p, v in event['b']: LOB["bids"][float(p)] = float(v)
     for p, v in event['a']: LOB["asks"][float(p)] = float(v)
+    
+    # Nifty-style: Calculate Mid-Price as current_price natively from LOB!
+    active_bids = [p for p, v in LOB["bids"].items() if v > 0]
+    active_asks = [p for p, v in LOB["asks"].items() if v > 0]
+    if active_bids and active_asks:
+        live_state["current_price"] = (max(active_bids) + min(active_asks)) / 2.0
+    elif active_bids:
+        live_state["current_price"] = max(active_bids)
 
 def aggregate_relative_lob(coverage_percent=0.01, buckets=500):
     ltp = live_state["current_price"]
@@ -357,14 +365,22 @@ async def lob_stream():
 def fetch_snapshot():
     global last_update_id, is_synced
     print("📸 Fetching Base Snapshot from REST...", flush=True)
+    retries = 0
     while not is_synced:
         try:
             res = requests.get(f"https://fapi.binance.com/fapi/v1/depth?symbol={SYMBOL_FUTURES.upper()}&limit=1000", proxies=PROXIES, timeout=10)
             data = res.json()
             if 'lastUpdateId' not in data:
-                print(f"❌ REST API Error: {data}. Retrying in 5s...", flush=True)
-                time.sleep(5)
-                continue
+                raise ValueError(f"REST API Error: {data}")
+        except Exception as e:
+            retries += 1
+            print(f"❌ Snapshot Error: {e}. Retry {retries}/3...", flush=True)
+            if retries >= 3:
+                print("⚠️ Forcing is_synced=True to build LOB from deltas!", flush=True)
+                is_synced = True
+                break
+            time.sleep(5)
+            continue
             
             last_update_id = data['lastUpdateId']
             for p, v in data['bids']: LOB["bids"][float(p)] = float(v)
@@ -381,51 +397,31 @@ def fetch_snapshot():
             print(f"❌ Proxy/Connection Error fetching snapshot: {e}. Retrying in 5s...", flush=True)
             time.sleep(5)
 
+
+
 async def single_stream_worker(stream_name):
-    """Connects to a single Binance WS stream to avoid silent drops on combined streams."""
+    """Connects to a single Binance WS stream (Trades/Liqs). Klines are removed."""
     url = f"wss://fstream.binance.com/ws/{stream_name}"
     while True:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.ws_connect(url, proxy=None, heartbeat=30, timeout=10, receive_timeout=30) as ws:
                     print(f"🟢 Connected to {stream_name}!", flush=True)
-                    messages_received = 0
-                    
                     async for msg in ws:
-                        messages_received += 1
-                        if messages_received % 1000 == 0:
-                            print(f"📊 {stream_name} flowing... ({messages_received} msgs)", flush=True)
-                        
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             data = json.loads(msg.data)
                             if "e" not in data: continue
-                            
                             event = data.get("e", "")
                             now_ms = time.time() * 1000
                             
                             if event == "aggTrade":
                                 is_buy = not data.get("m", True)
                                 trades_q.append((now_ms, float(data.get("q", 0)), is_buy))
-                                live_state["current_price"] = float(data.get("p", 0))
-                                
                             elif event == "forceOrder":
                                 o = data.get("o", {})
                                 liqs_q.append((now_ms, float(o.get("q", 0)), o.get("S") == "SELL"))
-                                
-                            elif event == "kline":
-                                k = data.get("k", {})
-                                try:
-                                    body = float(k.get("c", 0)) - float(k.get("o", 0))
-                                    interval = k.get("i", "")
-                                    if interval == "1m": live_state["body_1m"] = body
-                                    elif interval == "3m": live_state["body_3m"] = body
-                                    elif interval == "5m": live_state["body_5m"] = body
-                                except: pass
-                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR): 
-                            print(f"⚠️ {stream_name} stream closed or error: {msg}", flush=True)
-                            break
-        except Exception as e:
-            print(f"⚠️ {stream_name} dropped: {e}. Reconnecting in 5s...", flush=True)
+                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR): break
+        except Exception as e: pass
         await asyncio.sleep(5)
 
 async def fetch_oi_funding_loop():
@@ -452,6 +448,12 @@ async def snapshot_recording_loop():
     print("⏳ Starting 1-Second Snapshot Loop (Optimal for 5M Prediction)...", flush=True)
     current_date_str = get_trading_date_str()
     
+    candle_tracker = {
+        "1m": {"open": 0, "open_time": 0},
+        "3m": {"open": 0, "open_time": 0},
+        "5m": {"open": 0, "open_time": 0}
+    }
+
     while True:
         await asyncio.sleep(1)
         
@@ -465,9 +467,26 @@ async def snapshot_recording_loop():
             total_rows_collected = 0  # Reset for new day
         # --------------------------
 
-        if live_state["current_price"] == 0 and len(LOB["bids"]) > 0:
-            live_state["current_price"] = max(p for p, v in LOB["bids"].items() if v > 0)
         if not is_synced or live_state["current_price"] == 0: continue
+
+        now_sec = int(time.time())
+        curr_p = live_state["current_price"]
+        
+        # Native Candle Math (Nifty Repo Style)
+        if curr_p > 0:
+            if candle_tracker["1m"]["open"] == 0 or now_sec - candle_tracker["1m"]["open_time"] >= 60:
+                candle_tracker["1m"]["open"] = curr_p
+                candle_tracker["1m"]["open_time"] = now_sec
+            if candle_tracker["3m"]["open"] == 0 or now_sec - candle_tracker["3m"]["open_time"] >= 180:
+                candle_tracker["3m"]["open"] = curr_p
+                candle_tracker["3m"]["open_time"] = now_sec
+            if candle_tracker["5m"]["open"] == 0 or now_sec - candle_tracker["5m"]["open_time"] >= 300:
+                candle_tracker["5m"]["open"] = curr_p
+                candle_tracker["5m"]["open_time"] = now_sec
+                
+            live_state["body_1m"] = curr_p - candle_tracker["1m"]["open"]
+            live_state["body_3m"] = curr_p - candle_tracker["3m"]["open"]
+            live_state["body_5m"] = curr_p - candle_tracker["5m"]["open"]
         
         clean_queues()
         cleanup_lob_memory()  # ✅ CRITICAL: Prevent LOB RAM leak!
@@ -519,9 +538,6 @@ async def main():
     await asyncio.gather(
         single_stream_worker(f"{SYMBOL_FUTURES}@aggTrade"),
         single_stream_worker(f"{SYMBOL_FUTURES}@forceOrder"),
-        single_stream_worker(f"{SYMBOL_FUTURES}@kline_1m"),
-        single_stream_worker(f"{SYMBOL_FUTURES}@kline_3m"),
-        single_stream_worker(f"{SYMBOL_FUTURES}@kline_5m"),
         fetch_oi_funding_loop(),
         snapshot_recording_loop()
     )
