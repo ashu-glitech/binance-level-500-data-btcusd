@@ -407,6 +407,7 @@ def fetch_snapshot():
 
 async def trades_liqs_worker():
     """Combined Trade and Liquidation Stream for Binance Futures with Auto-Reconnect."""
+    global total_trades_captured_counter, total_liqs_captured_counter
     streams = f"{SYMBOL_FUTURES}@aggTrade/{SYMBOL_FUTURES}@forceOrder"
     url = f"wss://fstream.binance.com/market/stream?streams={streams}"
     while True:
