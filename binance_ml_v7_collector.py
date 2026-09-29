@@ -60,16 +60,16 @@ def start_health_server():
         httpd.serve_forever()
 
 # HF API Setup
-HF_TOKEN = os.environ.get("HF_TOKEN", "")
-HF_DATASET_REPO = os.environ.get("HF_DATASET_REPO", "btcusddata/binance-ai-data")
+HF_TOKEN = os.environ.get("HF_TOKEN", "").strip()  # ✅ CRITICAL: Strip hidden spaces/newlines!
+HF_DATASET_REPO = os.environ.get("HF_DATASET_REPO", "btcusddata/binance-ai-data").strip()
 
 if HF_TOKEN and HF_DATASET_REPO:
     try:
         api = HfApi(token=HF_TOKEN)
         create_repo(repo_id=HF_DATASET_REPO, repo_type="dataset", token=HF_TOKEN, exist_ok=True)
-        print(f"✅ Hugging Face Dataset {HF_DATASET_REPO} is ready for sync!")
+        print(f"✅ Hugging Face Dataset {HF_DATASET_REPO} is ready for sync!", flush=True)
     except Exception as e:
-        print(f"⚠️ Could not verify HF Repo: {e}")
+        print(f"⚠️ Could not verify HF Repo: {e}", flush=True)
 
 def get_working_proxy():
     user_proxy = os.environ.get("BINANCE_PROXY")
