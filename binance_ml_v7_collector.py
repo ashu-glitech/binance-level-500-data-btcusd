@@ -36,9 +36,11 @@ class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
         if self.path == "/debug":
             self.send_response(200)
             self.send_header("Content-type", "application/json")
-            self.end_headers()
             debug_info = {
-                "accumulators": accumulators,
+                "version": "v7.3_combined_stream",
+                "total_trades_captured": total_trades_captured_counter,
+                "total_liqs_captured": total_liqs_captured_counter,
+                "accumulators_1s": accumulators,
                 "lob_bids_len": len(LOB["bids"]),
                 "live_state": live_state
             }
@@ -135,6 +137,8 @@ accumulators = {
     "liqs_short": 0.0,
     "trade_count": 0
 }
+total_trades_captured_counter = 0
+total_liqs_captured_counter = 0
 
 # --- LOB MEMORY CLEANUP (Run every 5 mins to prevent RAM leak) ---
 lob_cleanup_last_time = time.time()
@@ -429,6 +433,7 @@ async def trades_liqs_worker():
                                 else:
                                     accumulators["sell_vol"] += qty
                                 accumulators["trade_count"] += 1
+                                total_trades_captured_counter += 1
                                 
                             elif event == "forceOrder":
                                 o = data.get("o", {})
@@ -437,6 +442,7 @@ async def trades_liqs_worker():
                                     accumulators["liqs_long"] += qty
                                 else:
                                     accumulators["liqs_short"] += qty
+                                total_liqs_captured_counter += 1
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR): break
         except Exception as e:
             print(f"⚠️ Trades/Liqs stream dropped: {e}. Reconnecting in 3s...", flush=True)
