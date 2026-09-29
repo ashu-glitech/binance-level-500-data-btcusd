@@ -204,6 +204,26 @@ def upload_new_chunks_to_hf():
     except Exception as e:
         print(f"⚠️ HF Chunk Upload Failed: {e}", flush=True)
 
+def upload_final_daily_zip(prev_date_str):
+    """Uploads the final merged ZIP for the entire day (Runs once at Midnight UTC)."""
+    print(f"🌅 [DAY ROLLOVER] Generating final ZIP for {prev_date_str}...", flush=True)
+    if not HF_TOKEN or not HF_DATASET_REPO: return
+    zip_path = create_daily_zip(prev_date_str)
+    if not zip_path or not os.path.exists(zip_path): return
+    try:
+        api = HfApi(token=HF_TOKEN)
+        zip_name = os.path.basename(zip_path)
+        api.upload_file(
+            path_or_fileobj=zip_path,
+            path_in_repo=f"daily_vault/{zip_name}",
+            repo_id=HF_DATASET_REPO,
+            repo_type="dataset",
+            token=HF_TOKEN
+        )
+        print(f"✅ [DAY ROLLOVER] Successfully uploaded final ZIP {zip_name} to HF!", flush=True)
+    except Exception as e:
+        print(f"⚠️ Day Rollover ZIP Upload Failed: {e}", flush=True)
+
 def resume_from_hf():
     """On restart, download today's individual chunks from HF to resume data collection."""
     global total_rows_collected
@@ -379,8 +399,21 @@ def clean_queues():
 async def snapshot_recording_loop():
     global last_hf_upload_time_seconds
     print("⏳ Starting 1-Second Snapshot Loop (Optimal for 5M Prediction)...", flush=True)
+    current_date_str = get_trading_date_str()
+    
     while True:
         await asyncio.sleep(1)
+        
+        # --- DAY ROLLOVER CHECK ---
+        new_date_str = get_trading_date_str()
+        if new_date_str != current_date_str:
+            print(f"🔄 Date changed from {current_date_str} to {new_date_str}. Triggering rollover!", flush=True)
+            threading.Thread(target=upload_final_daily_zip, args=(current_date_str,), daemon=True).start()
+            current_date_str = new_date_str
+            global total_rows_collected
+            total_rows_collected = 0  # Reset for new day
+        # --------------------------
+
         if live_state["current_price"] == 0 and len(LOB["bids"]) > 0:
             live_state["current_price"] = max(p for p, v in LOB["bids"].items() if v > 0)
         if not is_synced or live_state["current_price"] == 0: continue
