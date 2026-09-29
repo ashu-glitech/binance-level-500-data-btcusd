@@ -377,7 +377,7 @@ async def trades_liqs_stream():
         f"{SYMBOL_FUTURES}@kline_3m",
         f"{SYMBOL_FUTURES}@kline_5m"
     ]
-    url = "wss://fstream.binance.com/ws"
+    url = "wss://fstream.binance.com/stream"
     while True:  # ✅ INFINITE RECONNECT LOOP
         try:
             async with aiohttp.ClientSession() as session:
