@@ -451,11 +451,16 @@ async def snapshot_recording_loop():
                 last_hf_upload_time_seconds = time.time()
 
 async def main():
-    resume_from_hf()
     global PROXIES
+    # ✅ STEP 1: Start health server FIRST so Render sees the port immediately!
     threading.Thread(target=start_health_server, daemon=True).start()
+    await asyncio.sleep(1)  # Give server 1 sec to bind the port
+
+    # ✅ STEP 2: Resume from HF in background (non-blocking)
+    await asyncio.to_thread(resume_from_hf)
+
+    # ✅ STEP 3: Get proxy, connect streams, start collecting
     PROXIES = get_working_proxy()
-    
     asyncio.create_task(lob_stream())
     await asyncio.sleep(2)
     await asyncio.to_thread(fetch_snapshot)
