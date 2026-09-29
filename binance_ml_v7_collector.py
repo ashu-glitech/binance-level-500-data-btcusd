@@ -202,7 +202,21 @@ def create_daily_zip(date_str=None):
     date_dir = os.path.join(DATA_DIR, date_str)
     if not os.path.exists(date_dir): return None
     
-    chunk_files = sorted(glob.glob(os.path.join(date_dir, "*.parquet")))
+    # 1. Download any missing chunks from HF if Render restarted
+    if HF_TOKEN and HF_DATASET_REPO:
+        try:
+            api = HfApi(token=HF_TOKEN)
+            all_files = api.list_repo_files(repo_id=HF_DATASET_REPO, repo_type="dataset", token=HF_TOKEN)
+            hf_chunks = sorted([f for f in all_files if f.startswith(f"chunks/{date_str}/binance_MS_chunk_")])
+            for hf_f in hf_chunks:
+                local_chunk = os.path.join(date_dir, os.path.basename(hf_f))
+                if not os.path.exists(local_chunk):
+                    d = hf_hub_download(repo_id=HF_DATASET_REPO, filename=hf_f, repo_type="dataset", token=HF_TOKEN)
+                    shutil.copy(d, local_chunk)
+        except Exception as e:
+            print(f"⚠️ Notice while syncing chunks for daily zip: {e}", flush=True)
+
+    chunk_files = sorted(glob.glob(os.path.join(date_dir, "binance_MS_chunk_*.parquet")))
     if not chunk_files: return None
     
     try:
@@ -214,10 +228,10 @@ def create_daily_zip(date_str=None):
         zip_path = os.path.join(DATA_DIR, f"binance_ml_data_MS_{date_str}.zip")
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             zf.write(merged_parquet, arcname=os.path.basename(merged_parquet))
-        print(f"📦 ZIP created: {zip_path} ({len(chunk_files)} chunks, {merged.num_rows} rows)", flush=True)
+        print(f"📦 Daily 1-File created: {zip_path} ({len(chunk_files)} chunks, {merged.num_rows} rows)", flush=True)
         return zip_path
     except Exception as e:
-        print(f"❌ ZIP error: {e}", flush=True)
+        print(f"❌ Daily 1-File ZIP error: {e}", flush=True)
         return None
 
 def upload_new_chunks_to_hf():
@@ -254,14 +268,15 @@ def upload_new_chunks_to_hf():
         print(f"⚠️ HF Chunk Upload Failed: {e}", flush=True)
 
 def upload_final_daily_zip(prev_date_str):
-    """Uploads the final merged ZIP for the entire day (Runs once at Midnight UTC)."""
-    print(f"🌅 [DAY ROLLOVER] Generating final ZIP for {prev_date_str}...", flush=True)
+    """Uploads the final merged Daily 1-File for the entire day (Runs once at Midnight UTC)."""
+    print(f"🌅 [DAY ROLLOVER] Generating final 1-Day = 1-File for {prev_date_str}...", flush=True)
     if not HF_TOKEN or not HF_DATASET_REPO: return
     zip_path = create_daily_zip(prev_date_str)
     if not zip_path or not os.path.exists(zip_path): return
     try:
         api = HfApi(token=HF_TOKEN)
         zip_name = os.path.basename(zip_path)
+        # 1. Upload Daily ZIP
         api.upload_file(
             path_or_fileobj=zip_path,
             path_in_repo=f"daily_vault/{zip_name}",
@@ -269,9 +284,19 @@ def upload_final_daily_zip(prev_date_str):
             repo_type="dataset",
             token=HF_TOKEN
         )
-        print(f"✅ [DAY ROLLOVER] Successfully uploaded final ZIP {zip_name} to HF!", flush=True)
+        # 2. Upload Daily Merged Parquet directly for convenience
+        merged_parquet = os.path.join(DATA_DIR, prev_date_str, f"binance_ml_data_MS_{prev_date_str}.parquet")
+        if os.path.exists(merged_parquet):
+            api.upload_file(
+                path_or_fileobj=merged_parquet,
+                path_in_repo=f"daily_vault/binance_ml_data_MS_{prev_date_str}.parquet",
+                repo_id=HF_DATASET_REPO,
+                repo_type="dataset",
+                token=HF_TOKEN
+            )
+        print(f"✅ [DAY ROLLOVER] Successfully uploaded 1-Day=1-File ({zip_name}) to daily_vault!", flush=True)
     except Exception as e:
-        print(f"⚠️ Day Rollover ZIP Upload Failed: {e}", flush=True)
+        print(f"⚠️ Day Rollover Upload Failed: {e}", flush=True)
 
 def resume_from_hf():
     """On restart, download today's individual chunks from HF to resume data collection."""
