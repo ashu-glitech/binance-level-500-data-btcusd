@@ -65,6 +65,14 @@ class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(b"No data yet. Wait 1 minute.")
             return
 
+        if self.path == "/sync_vault":
+            threading.Thread(target=sync_missing_daily_vaults, daemon=True).start()
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "sync_missing_daily_vaults_triggered"}).encode("utf-8"))
+            return
+
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
@@ -200,7 +208,7 @@ def save_parquet_chunk():
 def create_daily_zip(date_str=None):
     if date_str is None: date_str = get_trading_date_str()
     date_dir = os.path.join(DATA_DIR, date_str)
-    if not os.path.exists(date_dir): return None
+    os.makedirs(date_dir, exist_ok=True)
     
     # 1. Download any missing chunks from HF if Render restarted
     if HF_TOKEN and HF_DATASET_REPO:
@@ -208,6 +216,7 @@ def create_daily_zip(date_str=None):
             api = HfApi(token=HF_TOKEN)
             all_files = api.list_repo_files(repo_id=HF_DATASET_REPO, repo_type="dataset", token=HF_TOKEN)
             hf_chunks = sorted([f for f in all_files if f.startswith(f"chunks/{date_str}/binance_MS_chunk_")])
+            print(f"📦 [DAILY ZIP] Found {len(hf_chunks)} chunks on HF for {date_str}. Ensuring all downloaded...", flush=True)
             for hf_f in hf_chunks:
                 local_chunk = os.path.join(date_dir, os.path.basename(hf_f))
                 if not os.path.exists(local_chunk):
@@ -217,7 +226,9 @@ def create_daily_zip(date_str=None):
             print(f"⚠️ Notice while syncing chunks for daily zip: {e}", flush=True)
 
     chunk_files = sorted(glob.glob(os.path.join(date_dir, "binance_MS_chunk_*.parquet")))
-    if not chunk_files: return None
+    if not chunk_files:
+        print(f"⚠️ No chunk files found for {date_str} to merge.", flush=True)
+        return None
     
     try:
         merged_parquet = os.path.join(date_dir, f"binance_ml_data_MS_{date_str}.parquet")
@@ -233,6 +244,31 @@ def create_daily_zip(date_str=None):
     except Exception as e:
         print(f"❌ Daily 1-File ZIP error: {e}", flush=True)
         return None
+
+def sync_missing_daily_vaults():
+    """Checks past days in chunks/ on HF and creates daily_vault master files if missing!"""
+    if not HF_TOKEN or not HF_DATASET_REPO: return
+    try:
+        api = HfApi(token=HF_TOKEN)
+        all_files = api.list_repo_files(repo_id=HF_DATASET_REPO, repo_type="dataset", token=HF_TOKEN)
+        chunk_dates = set()
+        current_today = get_trading_date_str()
+        for f in all_files:
+            if f.startswith("chunks/"):
+                parts = f.split("/")
+                if len(parts) >= 3 and parts[1] != current_today:
+                    chunk_dates.add(parts[1])
+        
+        print(f"🔍 [VAULT CHECK] Historical completed dates: {sorted(chunk_dates)}", flush=True)
+        for p_date in sorted(chunk_dates):
+            expected_vault_file = f"daily_vault/binance_ml_data_MS_{p_date}.parquet"
+            if expected_vault_file not in all_files:
+                print(f"📦 [VAULT BACKFILL] Past date {p_date} missing in daily_vault. Generating master 1-file now...", flush=True)
+                upload_final_daily_zip(p_date)
+            else:
+                print(f"✅ [VAULT CHECK] {p_date} already in daily_vault.", flush=True)
+    except Exception as e:
+        print(f"⚠️ Vault backfill check error: {e}", flush=True)
 
 def upload_new_chunks_to_hf():
     """200 IQ: Upload ONLY new chunks (not yet uploaded) to HF.
@@ -578,6 +614,8 @@ async def main():
 
     # ✅ STEP 2: Resume from HF in background (non-blocking)
     await asyncio.to_thread(resume_from_hf)
+    # Check and backfill missing daily_vault archives for past days
+    threading.Thread(target=sync_missing_daily_vaults, daemon=True).start()
 
     # ✅ STEP 3: Get proxy, connect streams, start collecting
     PROXIES = get_working_proxy()
