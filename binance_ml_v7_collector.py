@@ -12,11 +12,10 @@ import pyarrow.parquet as pq
 import http.server
 import socketserver
 import threading
-import zipfile
 import shutil
 from datetime import datetime, timedelta, timezone
 from collections import deque
-from huggingface_hub import HfApi, hf_hub_download, create_repo
+from huggingface_hub import HfApi, create_repo
 
 # ==============================================================================
 # 🚀 BINANCE LEVEL-500 ORDERBOOK COLLECTOR (Nifty-Proven Chunk+ZIP Formula)
@@ -65,13 +64,6 @@ class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(b"No data yet. Wait 1 minute.")
             return
 
-        if self.path == "/sync_vault":
-            threading.Thread(target=sync_missing_daily_vaults, daemon=True).start()
-            self.send_response(200)
-            self.send_header("Content-type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"status": "sync_missing_daily_vaults_triggered"}).encode("utf-8"))
-            return
 
         self.send_response(200)
         self.send_header("Content-type", "text/html")
@@ -205,74 +197,10 @@ def save_parquet_chunk():
         if 'df' in locals(): del df
         gc.collect()
 
-def create_daily_zip(date_str=None):
-    if date_str is None: date_str = get_trading_date_str()
-    date_dir = os.path.join(DATA_DIR, date_str)
-    os.makedirs(date_dir, exist_ok=True)
-    
-    # 1. Download any missing chunks from HF if Render restarted
-    if HF_TOKEN and HF_DATASET_REPO:
-        try:
-            api = HfApi(token=HF_TOKEN)
-            all_files = api.list_repo_files(repo_id=HF_DATASET_REPO, repo_type="dataset", token=HF_TOKEN)
-            hf_chunks = sorted([f for f in all_files if f.startswith(f"chunks/{date_str}/binance_MS_chunk_")])
-            print(f"📦 [DAILY ZIP] Found {len(hf_chunks)} chunks on HF for {date_str}. Ensuring all downloaded...", flush=True)
-            for hf_f in hf_chunks:
-                local_chunk = os.path.join(date_dir, os.path.basename(hf_f))
-                if not os.path.exists(local_chunk):
-                    d = hf_hub_download(repo_id=HF_DATASET_REPO, filename=hf_f, repo_type="dataset", token=HF_TOKEN)
-                    shutil.copy(d, local_chunk)
-        except Exception as e:
-            print(f"⚠️ Notice while syncing chunks for daily zip: {e}", flush=True)
-
-    chunk_files = sorted(glob.glob(os.path.join(date_dir, "binance_MS_chunk_*.parquet")))
-    if not chunk_files:
-        print(f"⚠️ No chunk files found for {date_str} to merge.", flush=True)
-        return None
-    
-    try:
-        merged_parquet = os.path.join(date_dir, f"binance_ml_data_MS_{date_str}.parquet")
-        tables = [pq.read_table(f) for f in chunk_files]
-        merged = pa.concat_tables(tables)
-        pq.write_table(merged, merged_parquet)
-        
-        zip_path = os.path.join(DATA_DIR, f"binance_ml_data_MS_{date_str}.zip")
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.write(merged_parquet, arcname=os.path.basename(merged_parquet))
-        print(f"📦 Daily 1-File created: {zip_path} ({len(chunk_files)} chunks, {merged.num_rows} rows)", flush=True)
-        return zip_path
-    except Exception as e:
-        print(f"❌ Daily 1-File ZIP error: {e}", flush=True)
-        return None
-
-def sync_missing_daily_vaults():
-    """Checks past days in chunks/ on HF and creates daily_vault master files if missing!"""
-    if not HF_TOKEN or not HF_DATASET_REPO: return
-    try:
-        api = HfApi(token=HF_TOKEN)
-        all_files = api.list_repo_files(repo_id=HF_DATASET_REPO, repo_type="dataset", token=HF_TOKEN)
-        chunk_dates = set()
-        current_today = get_trading_date_str()
-        for f in all_files:
-            if f.startswith("chunks/"):
-                parts = f.split("/")
-                if len(parts) >= 3 and parts[1] != current_today:
-                    chunk_dates.add(parts[1])
-        
-        print(f"🔍 [VAULT CHECK] Historical completed dates: {sorted(chunk_dates)}", flush=True)
-        for p_date in sorted(chunk_dates):
-            expected_vault_file = f"daily_vault/binance_ml_data_MS_{p_date}.parquet"
-            if expected_vault_file not in all_files:
-                print(f"📦 [VAULT BACKFILL] Past date {p_date} missing in daily_vault. Generating master 1-file now...", flush=True)
-                upload_final_daily_zip(p_date)
-            else:
-                print(f"✅ [VAULT CHECK] {p_date} already in daily_vault.", flush=True)
-    except Exception as e:
-        print(f"⚠️ Vault backfill check error: {e}", flush=True)
-
 def upload_new_chunks_to_hf():
-    """200 IQ: Upload ONLY new chunks (not yet uploaded) to HF.
-    Each chunk = ~100KB. 15 min interval = ~192 MB/month. Well under 5GB!"""
+    """Ultra-lightweight: Upload ONLY new chunks (not yet uploaded) to HF.
+    Each chunk = ~100KB. 15 min interval = ~100-140 MB/day.
+    Retains only the latest 3 chunks locally to keep Render disk permanently under 5MB!"""
     global last_upload_time
     if not HF_TOKEN or not HF_DATASET_REPO: return
 
@@ -283,7 +211,6 @@ def upload_new_chunks_to_hf():
     all_chunks = sorted(glob.glob(os.path.join(date_dir, "binance_MS_chunk_*.parquet")))
     new_chunks = [f for f in all_chunks if f not in uploaded_chunks]
     if not new_chunks:
-        print(f"[HF SYNC] No new chunks to upload.", flush=True)
         return
 
     try:
@@ -300,60 +227,27 @@ def upload_new_chunks_to_hf():
             uploaded_chunks.add(chunk_file)
         last_upload_time = datetime.now().strftime('%H:%M:%S')
         print(f"[{last_upload_time}] 🚀 [HF SYNC] {len(new_chunks)} chunk(s) uploaded! (~{len(new_chunks)*100}KB bandwidth used)", flush=True)
+
+        # 🧹 Disk Saver: Keep only the latest 3 chunks locally, delete older uploaded ones!
+        all_now = sorted(glob.glob(os.path.join(date_dir, "binance_MS_chunk_*.parquet")))
+        if len(all_now) > 3:
+            for old_c in all_now[:-3]:
+                if old_c in uploaded_chunks:
+                    try:
+                        os.remove(old_c)
+                    except Exception:
+                        pass
     except Exception as e:
         print(f"⚠️ HF Chunk Upload Failed: {e}", flush=True)
 
-def upload_final_daily_zip(prev_date_str):
-    """Uploads the final merged Daily 1-File for the entire day (Runs once at Midnight UTC)."""
-    print(f"🌅 [DAY ROLLOVER] Generating final 1-Day = 1-File for {prev_date_str}...", flush=True)
-    if not HF_TOKEN or not HF_DATASET_REPO: return
-    zip_path = create_daily_zip(prev_date_str)
-    if not zip_path or not os.path.exists(zip_path): return
-    try:
-        api = HfApi(token=HF_TOKEN)
-        zip_name = os.path.basename(zip_path)
-        # 1. Upload Daily ZIP
-        api.upload_file(
-            path_or_fileobj=zip_path,
-            path_in_repo=f"daily_vault/{zip_name}",
-            repo_id=HF_DATASET_REPO,
-            repo_type="dataset",
-            token=HF_TOKEN
-        )
-        # 2. Upload Daily Merged Parquet directly for convenience
-        merged_parquet = os.path.join(DATA_DIR, prev_date_str, f"binance_ml_data_MS_{prev_date_str}.parquet")
-        if os.path.exists(merged_parquet):
-            api.upload_file(
-                path_or_fileobj=merged_parquet,
-                path_in_repo=f"daily_vault/binance_ml_data_MS_{prev_date_str}.parquet",
-                repo_id=HF_DATASET_REPO,
-                repo_type="dataset",
-                token=HF_TOKEN
-            )
-        print(f"✅ [DAY ROLLOVER] Successfully uploaded 1-Day=1-File ({zip_name}) to daily_vault!", flush=True)
-    except Exception as e:
-        print(f"⚠️ Day Rollover Upload Failed: {e}", flush=True)
-
 def resume_from_hf():
-    """On restart, download today's individual chunks from HF to resume data collection."""
+    """Fast Resume: Check HF chunk count for today without downloading any files (0 MB bandwidth)!"""
     global total_rows_collected
     if not HF_TOKEN or not HF_DATASET_REPO: return
     date_str = get_trading_date_str()
     date_dir = os.path.join(DATA_DIR, date_str)
     os.makedirs(date_dir, exist_ok=True)
 
-    # If chunks already on disk, just count and resume
-    existing_chunks = sorted(glob.glob(os.path.join(date_dir, "binance_MS_chunk_*.parquet")))
-    if existing_chunks:
-        for c in existing_chunks:
-            try: total_rows_collected += pq.read_metadata(c).num_rows
-            except: pass
-        print(f"✅ {len(existing_chunks)} chunk(s) already on disk. Resuming with {total_rows_collected} rows!", flush=True)
-        # Mark existing disk chunks as already uploaded so we don't re-upload them
-        uploaded_chunks.update(existing_chunks)
-        return
-
-    # Try downloading individual chunks from HF
     try:
         print(f"🔄 Checking HF for today's chunks (chunks/{date_str}/)...", flush=True)
         api = HfApi(token=HF_TOKEN)
@@ -364,15 +258,11 @@ def resume_from_hf():
             print(f"ℹ️ No chunks on HF for {date_str}. Starting fresh.", flush=True)
             return
 
-        for hf_path in today_chunks:
-            chunk_name = os.path.basename(hf_path)
-            local_path = os.path.join(date_dir, chunk_name)
-            uploaded_chunks.add(local_path)  # Mark as already on HF so we never re-upload!
-
         total_rows_collected = len(today_chunks) * 60
         print(f"✅ Fast Resume from HF: Found {len(today_chunks)} chunk(s) on HF (~{total_rows_collected} rows). Resumed instantly in 0.1s!", flush=True)
     except Exception as e:
-        print(f"ℹ️ Could not resume from HF: {e}. Starting fresh.", flush=True)
+        print(f"ℹ️ Could not check HF chunks: {e}. Starting fresh.", flush=True)
+
 
 # ==============================================================================
 # 📊 BINANCE LOB LOGIC
@@ -560,8 +450,12 @@ async def snapshot_recording_loop():
         # --- DAY ROLLOVER CHECK ---
         new_date_str = get_trading_date_str()
         if new_date_str != current_date_str:
-            print(f"🔄 Date changed from {current_date_str} to {new_date_str}. Triggering rollover!", flush=True)
-            threading.Thread(target=upload_final_daily_zip, args=(current_date_str,), daemon=True).start()
+            print(f"🔄 Date changed from {current_date_str} to {new_date_str}.", flush=True)
+            old_dir = os.path.join(DATA_DIR, current_date_str)
+            try:
+                shutil.rmtree(old_dir, ignore_errors=True)
+            except Exception:
+                pass
             current_date_str = new_date_str
             global total_rows_collected
             total_rows_collected = 0  # Reset for new day
@@ -628,8 +522,6 @@ async def main():
 
     # ✅ STEP 2: Resume from HF in background (non-blocking)
     await asyncio.to_thread(resume_from_hf)
-    # Check and backfill missing daily_vault archives for past days
-    threading.Thread(target=sync_missing_daily_vaults, daemon=True).start()
 
     # ✅ STEP 3: Get proxy, connect streams, start collecting
     PROXIES = get_working_proxy()
