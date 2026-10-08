@@ -433,35 +433,49 @@ async def lob_stream():
 
 def fetch_snapshot():
     global last_update_id, is_synced
-    print("📸 Fetching Base Snapshot from REST...", flush=True)
+    print("📸 Fetching Base Snapshot from Multi-Region Binance Mirrors...", flush=True)
+    
+    # 5 Global Rotating Endpoints (Vision Mirror NEVER geo-blocks cloud servers)
+    endpoints = [
+        f"https://fapi.binance.com/fapi/v1/depth?symbol={SYMBOL_FUTURES.upper()}&limit=1000",
+        f"https://data-api.binance.vision/api/v3/depth?symbol={SYMBOL_FUTURES.upper()}&limit=1000",
+        f"https://api1.binance.com/api/v3/depth?symbol={SYMBOL_FUTURES.upper()}&limit=1000",
+        f"https://api2.binance.com/api/v3/depth?symbol={SYMBOL_FUTURES.upper()}&limit=1000",
+        f"https://api3.binance.com/api/v3/depth?symbol={SYMBOL_FUTURES.upper()}&limit=1000"
+    ]
+    
     retries = 0
     while not is_synced:
-        try:
-            res = requests.get(f"https://fapi.binance.com/fapi/v1/depth?symbol={SYMBOL_FUTURES.upper()}&limit=1000", proxies=PROXIES, timeout=10)
-            data = res.json()
-            if 'lastUpdateId' not in data:
-                raise ValueError(f"REST API Error: {data}")
-        except Exception as e:
-            retries += 1
-            print(f"❌ Snapshot Error: {e}. Retry {retries}/3...", flush=True)
-            if retries >= 3:
-                print("⚠️ Forcing is_synced=True to build LOB from deltas!", flush=True)
+        for url in endpoints:
+            try:
+                use_proxy = PROXIES if "fapi.binance.com" in url else None
+                res = requests.get(url, proxies=use_proxy, timeout=5)
+                if res.status_code != 200:
+                    continue
+                data = res.json()
+                bids = data.get('bids', [])
+                asks = data.get('asks', [])
+                if len(bids) < 100 or len(asks) < 100:
+                    continue
+                    
+                last_update_id = data.get('lastUpdateId', 0)
+                for p, v in bids: LOB["bids"][float(p)] = float(v)
+                for p, v in asks: LOB["asks"][float(p)] = float(v)
+                
+                for e in buffered_events:
+                    if last_update_id > 0 and e.get('u', 0) <= last_update_id: continue
+                    apply_lob_event(e)
+                buffered_events.clear()
                 is_synced = True
-                break
-            time.sleep(5)
-            continue
-            
-        last_update_id = data['lastUpdateId']
-        for p, v in data['bids']: LOB["bids"][float(p)] = float(v)
-        for p, v in data['asks']: LOB["asks"][float(p)] = float(v)
-        
-        for e in buffered_events:
-            if e['u'] <= last_update_id: continue
-            apply_lob_event(e)
-        buffered_events.clear()  # ✅ CRITICAL: Free memory after sync!
-        is_synced = True
-        print("✅ Local Orderbook (LOB) Synced!", flush=True)
-        break  # Success, exit loop
+                source_domain = url.split("/")[2]
+                print(f"✅ Local Orderbook (LOB) 100% Synced from {source_domain}! (Loaded {len(LOB['bids'])} Bids, {len(LOB['asks'])} Asks)", flush=True)
+                return
+            except Exception as e:
+                pass
+                
+        retries += 1
+        print(f"⏳ Snapshot attempt {retries} rotating mirrors... Retrying in 3s...", flush=True)
+        time.sleep(3)
 
 
 
